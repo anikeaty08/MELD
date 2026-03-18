@@ -1,0 +1,30 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenvs and local dependency bundles
+.venv/
+.deps/
+
+# Test and tooling output
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Runtime outputs
+results.json
+results_verify.json
+experiment.log
+
+# Dataset and large local assets
+data/
+
+# Reference clones and local scratch files
+_delta_ref/

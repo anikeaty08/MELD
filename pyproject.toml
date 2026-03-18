@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meld-framework"
+version = "0.1.0"
+description = "MELD: Manifold-Equivalent Learning with Deployment guarantees"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "torch>=2.1",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+benchmark = [
+  "continuum>=1.2.7",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.3",
+]
+
+[tool.setuptools.packages.find]
+include = ["meld*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
