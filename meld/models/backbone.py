@@ -96,22 +96,97 @@ class ResNetBackbone(nn.Module):
         return x.view(x.size(0), -1)
 
     def _init_from_torchvision(self) -> None:
+        """Map ImageNet-pretrained ResNet-18 weights into this CIFAR ResNet.
+
+        Channel mapping (CIFAR stage → ResNet-18 layer → slice):
+          stem   :  16 channels  ←  conv1  [64]       → [:16]
+          stage_1:  16 channels  ←  layer1 [64]       → [:16, :16]
+          stage_2:  32 channels  ←  layer2 [128]      → [:32, :32]
+          stage_3:  64 channels  ←  layer3 [256]      → [:64, :64]
+
+        Kernel mapping:
+          stem: 3×3 ← centre-crop of 7×7 (rows 2:5, cols 2:5)
+          block convs: 3×3 ← direct (same kernel size in both architectures)
+
+        ResNet-18 has 2 blocks per layer; CIFAR ResNets may have more.
+        Only the first min(dst, src) blocks per stage receive pretrained
+        weights — remaining blocks keep their Kaiming initialisation.
+        DownsampleA uses zero-padding with no learnable parameters, so
+        there is nothing to copy for the stride-2 downsample blocks.
+        """
         try:
-            from torchvision.models import resnet18
-            from torchvision.models import ResNet18_Weights
+            from torchvision.models import ResNet18_Weights, resnet18
         except Exception:
             return
         try:
-            reference = resnet18(weights=ResNet18_Weights.DEFAULT)
+            ref = resnet18(weights=ResNet18_Weights.DEFAULT)
         except Exception:
             return
+
         with torch.no_grad():
-            conv = reference.conv1.weight[:16, :, 2:5, 2:5]
-            self.conv_1_3x3.weight.copy_(conv)
-            self.bn_1.weight.copy_(reference.bn1.weight[:16])
-            self.bn_1.bias.copy_(reference.bn1.bias[:16])
-            self.bn_1.running_mean.copy_(reference.bn1.running_mean[:16])
-            self.bn_1.running_var.copy_(reference.bn1.running_var[:16])
+            # ── Stem ────────────────────────────────────────────────────
+            # ref.conv1 : [64, 3, 7, 7]  →  conv_1_3x3 : [16, 3, 3, 3]
+            # centre-crop the 7×7 kernel down to 3×3 first, then partial-copy
+            stem_src = ref.conv1.weight[:, :, 2:5, 2:5].contiguous()
+            _partial_copy(self.conv_1_3x3.weight, stem_src)
+            _copy_bn(self.bn_1, ref.bn1)
+
+            # ── Stages ──────────────────────────────────────────────────
+            _copy_stage(self.stage_1, ref.layer1)
+            _copy_stage(self.stage_2, ref.layer2)
+            _copy_stage(self.stage_3, ref.layer3)
+
+
+# ── Pretrained weight-mapping helpers ────────────────────────────────────────
+
+def _partial_copy(dst: torch.Tensor, src: torch.Tensor) -> None:
+    """Write src into the matching prefix of dst, leaving the rest untouched.
+
+    For every dimension, copies min(dst_size, src_size) elements.
+    The destination tensor retains its Kaiming-initialised values outside
+    the copied region, so no uninitialised or zero-padded channels exist.
+
+    This is safer than a bare .copy_() call when dst and src differ in size,
+    and avoids the silent semantic issue of leaving excess channels at zero.
+    """
+    slices = tuple(slice(0, min(d, s)) for d, s in zip(dst.shape, src.shape))
+    dst[slices].copy_(src[slices])
+
+
+def _copy_bn(dst: nn.BatchNorm2d, src: nn.BatchNorm2d) -> None:
+    """Copy BN parameters channel-by-channel up to min(dst_ch, src_ch).
+
+    Uses _partial_copy so the destination is never partially zero-filled
+    when dst has more channels than src.
+    """
+    for dst_t, src_t in (
+        (dst.weight, src.weight),
+        (dst.bias, src.bias),
+        (dst.running_mean, src.running_mean),
+        (dst.running_var, src.running_var),
+    ):
+        _partial_copy(dst_t, src_t)
+
+
+def _copy_stage(
+    dst_stage: nn.Sequential,
+    src_layer: nn.Sequential,
+) -> None:
+    """Copy weights from a torchvision ResNet layer into a MELD stage.
+
+    Pairs blocks by position up to min(len(dst), len(src)).
+    Uses _partial_copy for every conv and BN tensor so:
+      - no destination element is left zero-filled or uninitialised,
+      - mismatches in channel count are handled gracefully in both directions
+        (dst wider than src, or src wider than dst).
+    DownsampleA carries no learnable parameters, so stride-2 downsample
+    blocks require no special handling.
+    """
+    for dst_block, src_block in zip(dst_stage, src_layer):
+        _partial_copy(dst_block.conv_a.weight, src_block.conv1.weight)
+        _copy_bn(dst_block.bn_a, src_block.bn1)
+        _partial_copy(dst_block.conv_b.weight, src_block.conv2.weight)
+        _copy_bn(dst_block.bn_b, src_block.bn2)
 
 
 def _build_resnet(depth: int, pretrained: bool = False) -> ResNetBackbone:
