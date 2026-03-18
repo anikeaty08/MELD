@@ -228,8 +228,8 @@ class BenchmarkRunner:
             for index in range(min(len(scenario_train), self.config.num_tasks)):
                 bundle.append(
                     (
-                        _TaskDatasetAdapter(scenario_train[index], normalize=True),
-                        _TaskDatasetAdapter(scenario_test[index], normalize=True),
+                        _TaskDatasetAdapter(scenario_train[index], normalize=False),
+                        _TaskDatasetAdapter(scenario_test[index], normalize=False),
                     )
                 )
             return bundle
