@@ -19,6 +19,7 @@ from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
 from ..core.updater import GeometryConstrainedUpdater
+from ..core.auto_config import derive_train_config
 from ..interfaces.base import Decision, DriftResult, TaskSnapshot, TrainArtifacts
 from ..modeling import MELDModel
 from ..models.backbone import resnet20, resnet32, resnet44, resnet56
@@ -53,6 +54,7 @@ class BenchmarkRunner:
         self.drift_detector = drift_detector or KLManifoldDriftDetector(config.shift_threshold)
         self.deploy_policy = deploy_policy or FourStateDeployPolicy()
         self.device = torch.device("cuda" if config.prefer_cuda and torch.cuda.is_available() else "cpu")
+        self._baseline_model_cache: MELDModel | None = None
 
     def run(self, results_path: str | Path | None = None) -> dict[str, Any]:
         tasks, eval_loaders = self._build_tasks()
@@ -80,7 +82,18 @@ class BenchmarkRunner:
                     list(range(model.classifier.num_classes - self.config.classes_per_task)),
                     task_id - 1,
                 )
+                self.snapshot_strategy._ema_decay = float(getattr(self.config.train, "fisher_ema_decay", 0.9))
+                if getattr(self.config.train, "auto_derive_hparams", False):
+                    task_train_config = derive_train_config(
+                        snapshot_before,
+                        self.config.train,
+                        getattr(self.config.train, "protection_level", 0.5),
+                    )
+                else:
+                    task_train_config = self.config.train
                 pre_bound = self.safety_oracle.pre_bound(snapshot_before, self.config.train)
+            else:
+                task_train_config = self.config.train
 
             if task_id > 0 and pre_bound > self.config.bound_tolerance:
                 delta_artifacts = TrainArtifacts(0, [], [], [], [], 0.0, skipped=True)
@@ -88,19 +101,19 @@ class BenchmarkRunner:
                 post_bound = pre_bound
                 drift_result = DriftResult(0.0, False, {}, "none")
                 decision = Decision(
-                    state="BOUND_VIOLATED",
+                    state="BOUND_EXCEEDED",
                     pre_bound=pre_bound,
                     post_bound=post_bound,
                     bound_held=False,
                     shift_score=0.0,
                     shift_detected=False,
-                    reason="pre-training safety bound exceeded tolerance; delta update skipped",
+                    reason="pre-training safety bound exceeded tolerance before training",
                     compute_savings_percent=0.0,
                     confidence=1.0,
                     recommended_action="full_retrain",
                 )
             else:
-                model, delta_artifacts = self.updater.update(model, task_loader, snapshot_before, self.config.train)
+                model, delta_artifacts = self.updater.update(model, task_loader, snapshot_before, task_train_config)
                 if snapshot_before is not None:
                     model = self.corrector.correct(model, snapshot_before)
                     snapshot_after = self.snapshot_strategy.capture(
@@ -116,8 +129,6 @@ class BenchmarkRunner:
                     post_bound = 0.0
                     drift_result = DriftResult(0.0, False, {}, "none")
 
-                full_metrics, full_time = self._run_full_retrain_baseline(all_seen_loaders, eval_loaders[: task_id + 1])
-                delta_metrics = self._evaluate(model, eval_loaders[: task_id + 1])
                 decision = self.deploy_policy.decide(
                     pre_bound,
                     post_bound,
@@ -125,9 +136,12 @@ class BenchmarkRunner:
                     _PolicyConfigProxy(
                         shift_threshold=self.config.shift_threshold,
                         delta_wall_time_seconds=delta_artifacts.wall_time_seconds,
-                        full_retrain_wall_time_seconds=full_time,
+                        full_retrain_wall_time_seconds=0.0,
                     ),
                 )
+                full_metrics, full_time = self._run_full_retrain_baseline(all_seen_loaders, eval_loaders[: task_id + 1])
+                delta_metrics = self._evaluate(model, eval_loaders[: task_id + 1])
+                decision.compute_savings_percent = compute_compute_savings(delta_artifacts.wall_time_seconds, full_time)
                 delta_metrics["wall_time_seconds"] = delta_artifacts.wall_time_seconds
                 task_result = self._task_result(
                     task_id,
@@ -166,7 +180,7 @@ class BenchmarkRunner:
         return results
 
     def _build_model(self) -> MELDModel:
-        backbone = BACKBONES[self.config.train.backbone]()
+        backbone = BACKBONES[self.config.train.backbone](pretrained=getattr(self.config.train, "pretrained_backbone", False))
         classifier = IncrementalClassifier(backbone.out_dim)
         return MELDModel(backbone, classifier).to(self.device)
 
@@ -254,11 +268,25 @@ class BenchmarkRunner:
         eval_loaders: list[DataLoader],
     ) -> tuple[dict[str, Any], float]:
         torch.manual_seed(int(self.config.seed) + len(train_loaders))
-        baseline_model = self._build_model()
-        baseline_model.classifier.adaption(len(train_loaders) * self.config.classes_per_task)
-        merged_train = self._merged_loader(train_loaders, shuffle=True)
+        use_cached = self.config.full_retrain_interval > 1 and self._baseline_model_cache is not None and (len(train_loaders) % self.config.full_retrain_interval != 0)
+        if use_cached:
+            baseline_model = self._baseline_model_cache.clone().to(self.device)
+            latest_train = train_loaders[-1]
+            required_classes = len(train_loaders) * self.config.classes_per_task
+            missing = required_classes - baseline_model.classifier.num_classes
+            if missing > 0:
+                baseline_model.classifier.adaption(missing)
+            train_loader = latest_train
+        else:
+            baseline_model = self._build_model()
+            baseline_model.classifier.adaption(len(train_loaders) * self.config.classes_per_task)
+            train_loader = self._merged_loader(train_loaders, shuffle=True)
         start = time.time()
-        baseline_model, _ = self.updater.update(baseline_model, merged_train, None, self.config.train)
+        baseline_epochs = self.config.train.full_retrain_epochs or self.config.train.epochs
+        baseline_config = asdict(self.config.train)
+        baseline_config["epochs"] = baseline_epochs
+        baseline_model, _ = self.updater.update(baseline_model, train_loader, None, _ConfigView(baseline_config))
+        self._baseline_model_cache = baseline_model.clone()
         metrics = self._evaluate(baseline_model, eval_loaders)
         wall_time = time.time() - start
         metrics["wall_time_seconds"] = wall_time
@@ -398,6 +426,12 @@ class _PolicyConfigProxy:
         self.full_retrain_wall_time_seconds = full_retrain_wall_time_seconds
 
 
+class _ConfigView:
+    def __init__(self, values: dict[str, Any]) -> None:
+        for key, value in values.items():
+            setattr(self, key, value)
+
+
 class _TaskDatasetAdapter(Dataset[Any]):
     def __init__(self, dataset: Dataset[Any], normalize: bool = False) -> None:
         self.dataset = dataset
@@ -423,13 +457,13 @@ class _TaskDatasetAdapter(Dataset[Any]):
     def _to_tensor(self, value: Any) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
             tensor = value.float()
-            if tensor.max().item() > 1.0:
+            if tensor.max().item() > 2.0:
                 tensor = tensor / 255.0
             return tensor
         array = np.asarray(value, dtype=np.float32)
         if array.ndim == 3 and array.shape[-1] in {1, 3}:
             array = np.transpose(array, (2, 0, 1))
         tensor = torch.from_numpy(array).float()
-        if tensor.max().item() > 1.0:
+        if tensor.max().item() > 2.0:
             tensor = tensor / 255.0
         return tensor

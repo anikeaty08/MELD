@@ -15,9 +15,12 @@ class TaskSnapshot:
     class_ids: list[int]
     class_means: dict[int, np.ndarray]
     class_covs: dict[int, np.ndarray]
+    class_anchors: dict[int, np.ndarray]
+    class_anchor_logits: dict[int, np.ndarray]
     classifier_norms: dict[int, float]
     fisher_diagonal: np.ndarray
     fisher_eigenvalue_max: float
+    mean_gradient_norm: float
     timestamp: float
     embedding_dim: int
     dataset_size: int
@@ -45,6 +48,15 @@ class Decision:
     compute_savings_percent: float
     confidence: float
     recommended_action: str
+
+
+VALID_DECISION_STATES = {
+    "SAFE_DELTA",
+    "CAUTIOUS_DELTA",
+    "BOUND_VIOLATED",
+    "SHIFT_CRITICAL",
+    "BOUND_EXCEEDED",
+}
 
 
 @dataclass(slots=True)

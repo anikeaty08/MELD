@@ -27,6 +27,12 @@ class TrainConfig:
     num_workers: int = 0
     momentum: float = 0.9
     weight_decay: float = 5e-4
+    use_ema_fisher: bool = True
+    fisher_ema_decay: float = 0.9
+    auto_derive_hparams: bool = True
+    protection_level: float = 0.5
+    pretrained_backbone: bool = False
+    full_retrain_epochs: int | None = None
 
 
 @dataclass(slots=True)
@@ -39,6 +45,7 @@ class MELDConfig:
     shift_threshold: float = 0.3
     data_root: Path = Path("./data")
     seed: int = 7
+    full_retrain_interval: int = 1
     train: TrainConfig = field(default_factory=TrainConfig)
 
 

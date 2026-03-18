@@ -11,6 +11,7 @@ from .base import (
     SnapshotStrategy,
     TaskSnapshot,
     TrainArtifacts,
+    VALID_DECISION_STATES,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "SnapshotStrategy",
     "TaskSnapshot",
     "TrainArtifacts",
+    "VALID_DECISION_STATES",
 ]

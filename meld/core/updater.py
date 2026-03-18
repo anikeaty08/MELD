@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections import defaultdict
 
-import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
@@ -24,6 +22,12 @@ def _gaussian_kl_diag(
     safe_before = torch.clamp(var_before, min=1e-6)
     term = torch.log(safe_after / safe_before) + (safe_before + (mean_before - mean_after).pow(2)) / safe_after - 1.0
     return 0.5 * term.sum()
+
+
+def _distribution_kl(student_logits: Tensor, teacher_logits: Tensor) -> Tensor:
+    student_log_probs = torch.log_softmax(student_logits, dim=1)
+    teacher_probs = torch.softmax(teacher_logits, dim=1)
+    return torch.nn.functional.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
 
 
 class GeometryConstrainedUpdater(ManifoldUpdater):
@@ -87,8 +91,10 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
 
                 if snapshot is not None and snapshot.class_means:
                     if batch_index % self.geometry_refresh_interval == 0:
-                        cached_geometry = self._geometry_loss(embeddings, targets, snapshot, device)
-                    geometry_loss = cached_geometry
+                        cached_geometry = self._geometry_loss(model, snapshot, device, embeddings.dtype)
+                        geometry_loss = cached_geometry
+                    else:
+                        geometry_loss = cached_geometry.detach()
                     ewc_loss = self._ewc_loss(params, reference, fisher_splits) * float(config.lambda_ewc)
                 else:
                     geometry_loss = torch.tensor(0.0, device=device)
@@ -125,18 +131,29 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         fisher_scale = max(snapshot.fisher_eigenvalue_max, 1e-6)
         return float(getattr(config, "geometry_decay", 0.5)) / (1.0 + fisher_scale * 100.0)
 
-    def _geometry_loss(self, embeddings: Tensor, targets: Tensor, snapshot: TaskSnapshot, device: torch.device) -> Tensor:
+    def _geometry_loss(
+        self,
+        model: nn.Module,
+        snapshot: TaskSnapshot,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
         losses = []
         for class_id in snapshot.class_ids:
-            mask = targets == class_id
-            if int(mask.sum().item()) == 0:
+            anchors_np = snapshot.class_anchors.get(class_id)
+            anchor_logits_np = snapshot.class_anchor_logits.get(class_id)
+            if anchors_np is None or anchor_logits_np is None or len(anchors_np) == 0:
                 continue
-            current = embeddings[mask]
-            current_mean = current.mean(dim=0)
-            current_var = current.var(dim=0, unbiased=False) + 1e-6
-            before_mean = torch.from_numpy(snapshot.class_means[class_id]).to(device=device, dtype=embeddings.dtype)
-            before_var = torch.from_numpy(snapshot.class_covs[class_id]).to(device=device, dtype=embeddings.dtype)
-            losses.append(_gaussian_kl_diag(before_mean, before_var, current_mean, current_var))
+            anchors = torch.from_numpy(anchors_np).to(device=device, dtype=dtype)
+            teacher_logits = torch.from_numpy(anchor_logits_np).to(device=device, dtype=dtype)
+            current_logits = model.classifier(anchors)
+            before_mean = torch.from_numpy(snapshot.class_means[class_id]).to(device=device, dtype=dtype)
+            before_var = torch.from_numpy(snapshot.class_covs[class_id]).to(device=device, dtype=dtype)
+            anchor_mean = anchors.mean(dim=0)
+            anchor_var = anchors.var(dim=0, unbiased=False) + 1e-6
+            stats_loss = _gaussian_kl_diag(before_mean, before_var, anchor_mean, anchor_var)
+            logits_loss = _distribution_kl(current_logits, teacher_logits)
+            losses.append(stats_loss + logits_loss)
         if not losses:
             return torch.tensor(0.0, device=device)
         return torch.stack(losses).mean()

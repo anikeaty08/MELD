@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..interfaces.base import Decision, DeployPolicy, DriftResult
+from ..interfaces.base import Decision, DeployPolicy, DriftResult, VALID_DECISION_STATES
 
 
 class FourStateDeployPolicy(DeployPolicy):
@@ -14,7 +14,7 @@ class FourStateDeployPolicy(DeployPolicy):
         savings = ((full_time - delta_time) / full_time * 100.0) if full_time > 0 else 0.0
 
         if post_bound > pre_bound:
-            return Decision(
+            decision = Decision(
                 state="BOUND_VIOLATED",
                 pre_bound=pre_bound,
                 post_bound=post_bound,
@@ -26,8 +26,10 @@ class FourStateDeployPolicy(DeployPolicy):
                 confidence=1.0,
                 recommended_action="full_retrain",
             )
+            self._validate(decision)
+            return decision
         if drift_result.severity == "critical":
-            return Decision(
+            decision = Decision(
                 state="SHIFT_CRITICAL",
                 pre_bound=pre_bound,
                 post_bound=post_bound,
@@ -39,9 +41,11 @@ class FourStateDeployPolicy(DeployPolicy):
                 confidence=1.0,
                 recommended_action="full_retrain",
             )
+            self._validate(decision)
+            return decision
         if drift_result.severity == "minor":
             confidence = max(0.4, 0.6 - (drift_result.shift_score / max(2.0 * threshold, 1e-6)) * 0.2)
-            return Decision(
+            decision = Decision(
                 state="CAUTIOUS_DELTA",
                 pre_bound=pre_bound,
                 post_bound=post_bound,
@@ -53,8 +57,10 @@ class FourStateDeployPolicy(DeployPolicy):
                 confidence=confidence,
                 recommended_action="delta_update",
             )
+            self._validate(decision)
+            return decision
         confidence = max(0.0, 1.0 - ((post_bound / pre_bound) * 0.3 if pre_bound > 0 else 0.0))
-        return Decision(
+        decision = Decision(
             state="SAFE_DELTA",
             pre_bound=pre_bound,
             post_bound=post_bound,
@@ -66,3 +72,9 @@ class FourStateDeployPolicy(DeployPolicy):
             confidence=confidence,
             recommended_action="delta_update",
         )
+        self._validate(decision)
+        return decision
+
+    def _validate(self, decision: Decision) -> None:
+        if decision.state not in VALID_DECISION_STATES:
+            raise ValueError(f"Unknown decision state: {decision.state}")

@@ -47,7 +47,7 @@ class BasicBlock(nn.Module):
 
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, depth: int, channels: int = 3) -> None:
+    def __init__(self, depth: int, channels: int = 3, pretrained: bool = False) -> None:
         super().__init__()
         if (depth - 2) % 6 != 0:
             raise ValueError("depth should be one of 20, 32, 44, or 56")
@@ -61,6 +61,8 @@ class ResNetBackbone(nn.Module):
         self.avgpool = nn.AvgPool2d(8)
         self.out_dim = 64
         self._init_weights()
+        if pretrained:
+            self._init_from_torchvision()
 
     def _make_layer(self, planes: int, blocks: int, stride: int) -> nn.Sequential:
         downsample = None
@@ -93,22 +95,40 @@ class ResNetBackbone(nn.Module):
         x = self.avgpool(x)
         return x.view(x.size(0), -1)
 
+    def _init_from_torchvision(self) -> None:
+        try:
+            from torchvision.models import resnet18
+            from torchvision.models import ResNet18_Weights
+        except Exception:
+            return
+        try:
+            reference = resnet18(weights=ResNet18_Weights.DEFAULT)
+        except Exception:
+            return
+        with torch.no_grad():
+            conv = reference.conv1.weight[:16, :, 2:5, 2:5]
+            self.conv_1_3x3.weight.copy_(conv)
+            self.bn_1.weight.copy_(reference.bn1.weight[:16])
+            self.bn_1.bias.copy_(reference.bn1.bias[:16])
+            self.bn_1.running_mean.copy_(reference.bn1.running_mean[:16])
+            self.bn_1.running_var.copy_(reference.bn1.running_var[:16])
 
-def _build_resnet(depth: int) -> ResNetBackbone:
-    return ResNetBackbone(depth=depth)
+
+def _build_resnet(depth: int, pretrained: bool = False) -> ResNetBackbone:
+    return ResNetBackbone(depth=depth, pretrained=pretrained)
 
 
-def resnet20() -> ResNetBackbone:
-    return _build_resnet(20)
+def resnet20(pretrained: bool = False) -> ResNetBackbone:
+    return _build_resnet(20, pretrained=pretrained)
 
 
-def resnet32() -> ResNetBackbone:
-    return _build_resnet(32)
+def resnet32(pretrained: bool = False) -> ResNetBackbone:
+    return _build_resnet(32, pretrained=pretrained)
 
 
-def resnet44() -> ResNetBackbone:
-    return _build_resnet(44)
+def resnet44(pretrained: bool = False) -> ResNetBackbone:
+    return _build_resnet(44, pretrained=pretrained)
 
 
-def resnet56() -> ResNetBackbone:
-    return _build_resnet(56)
+def resnet56(pretrained: bool = False) -> ResNetBackbone:
+    return _build_resnet(56, pretrained=pretrained)
