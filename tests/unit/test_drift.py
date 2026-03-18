@@ -15,6 +15,7 @@ def _snapshot(mean: float) -> TaskSnapshot:
         classifier_norms={0: 1.0},
         fisher_diagonal=np.array([0.1, 0.2]),
         fisher_eigenvalue_max=0.2,
+        mean_gradient_norm=0.1,
         timestamp=0.0,
         embedding_dim=2,
         dataset_size=16,

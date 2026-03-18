@@ -60,7 +60,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                 class_anchor_logits[class_id] = logits[:0]
 
         fisher_diagonal, mean_gradient_norm = self._compute_fisher(model, dataloader, self.fisher_samples)
-        if self._ema_fisher is not None:
+        if self._ema_fisher is not None and self._ema_fisher.shape == fisher_diagonal.shape:
             fisher_diagonal = self._ema_decay * self._ema_fisher + (1.0 - self._ema_decay) * fisher_diagonal
         self._ema_fisher = fisher_diagonal.copy()
         parameter_reference = [param.detach().cpu().numpy().copy() for param in model.parameters()]

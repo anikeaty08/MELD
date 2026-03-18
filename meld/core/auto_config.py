@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import numpy as np
 
-from ..api import TrainConfig
 from ..interfaces.base import TaskSnapshot
 
 
-def derive_train_config(snapshot: TaskSnapshot, base_config: TrainConfig, protection_level: float = 0.5) -> TrainConfig:
+def derive_train_config(snapshot: TaskSnapshot, base_config: Any, protection_level: float = 0.5) -> Any:
     fisher_max = max(float(snapshot.fisher_eigenvalue_max), 1e-6)
     fisher_mean = max(float(np.mean(snapshot.fisher_diagonal)) if snapshot.fisher_diagonal.size else 1e-6, 1e-6)
     scale = max(0.0, min(1.0, float(protection_level)))
