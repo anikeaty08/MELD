@@ -1,0 +1,32 @@
+{
+  "status": "running",
+  "config": {
+    "dataset": "CIFAR-10",
+    "num_tasks": 2,
+    "classes_per_task": 5,
+    "bound_tolerance": 0.01,
+    "shift_threshold": 0.3,
+    "prefer_cuda": false,
+    "seed": 7,
+    "train": {
+      "backbone": "resnet32",
+      "epochs": 10,
+      "batch_size": 64,
+      "lr": 0.1,
+      "lambda_geometry": 1.0,
+      "lambda_ewc": 0.4,
+      "geometry_decay": 0.5,
+      "num_workers": 0,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "use_ema_fisher": true,
+      "fisher_ema_decay": 0.9,
+      "auto_derive_hparams": true,
+      "protection_level": 0.5,
+      "pretrained_backbone": false,
+      "full_retrain_epochs": null
+    }
+  },
+  "tasks": [],
+  "final_summary": null
+}

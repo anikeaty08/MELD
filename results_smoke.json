@@ -1,0 +1,184 @@
+{
+  "status": "completed",
+  "config": {
+    "dataset": "CIFAR-10",
+    "num_tasks": 2,
+    "classes_per_task": 5,
+    "bound_tolerance": 0.01,
+    "shift_threshold": 0.3,
+    "prefer_cuda": false,
+    "seed": 7,
+    "train": {
+      "backbone": "resnet32",
+      "epochs": 1,
+      "batch_size": 32,
+      "lr": 0.1,
+      "lambda_geometry": 1.0,
+      "lambda_ewc": 0.4,
+      "geometry_decay": 0.5,
+      "num_workers": 0,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "use_ema_fisher": true,
+      "fisher_ema_decay": 0.9,
+      "auto_derive_hparams": true,
+      "protection_level": 0.5,
+      "pretrained_backbone": false,
+      "full_retrain_epochs": null
+    }
+  },
+  "tasks": [
+    {
+      "task_id": 0,
+      "delta": {
+        "top1": 0.281,
+        "top5": 1.0,
+        "ece": 0.009226297938823699,
+        "per_class_acc": {
+          "0": 0.079,
+          "1": 0.968,
+          "2": 0.009,
+          "3": 0.143,
+          "4": 0.206
+        },
+        "wall_time_seconds": 98.71680903434753
+      },
+      "full_retrain": {
+        "top1": 0.2484,
+        "top5": 1.0,
+        "ece": 0.03969340254068374,
+        "per_class_acc": {
+          "0": 0.094,
+          "1": 0.015,
+          "2": 0.021,
+          "3": 0.913,
+          "4": 0.199
+        },
+        "wall_time_seconds": 97.43851971626282
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 0.012408350594341755,
+        "class_ids": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "oracle": {
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": true
+      },
+      "drift": {
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {}
+      },
+      "decision": {
+        "state": "SAFE_DELTA",
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": true,
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "reason": "bound held, no shift detected",
+        "compute_savings_percent": -1.3118932038448918,
+        "confidence": 1.0,
+        "recommended_action": "delta_update"
+      },
+      "equivalence_gap": 0.86853485488332,
+      "forgetting": 0.0,
+      "compute_savings_percent": -1.3118932038448918
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "top1": 0.1404,
+        "top5": 0.5533,
+        "ece": 0.006609053937345743,
+        "per_class_acc": {
+          "0": 0.079,
+          "1": 0.967,
+          "2": 0.009,
+          "3": 0.143,
+          "4": 0.206,
+          "5": 0.0,
+          "6": 0.0,
+          "7": 0.0,
+          "8": 0.0,
+          "9": 0.0
+        },
+        "wall_time_seconds": 0.0
+      },
+      "full_retrain": {
+        "top1": 0.1368,
+        "top5": 0.5429,
+        "ece": 0.3706964368410409,
+        "per_class_acc": {
+          "0": 0.874,
+          "1": 0.014,
+          "2": 0.086,
+          "3": 0.007,
+          "4": 0.034,
+          "5": 0.017,
+          "6": 0.241,
+          "7": 0.016,
+          "8": 0.078,
+          "9": 0.001
+        },
+        "wall_time_seconds": 184.7776165008545
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 0.01864113286137581,
+        "class_ids": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "oracle": {
+        "pre_bound": 0.417028432194045,
+        "post_bound": 0.417028432194045,
+        "bound_held": false
+      },
+      "drift": {
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {}
+      },
+      "decision": {
+        "state": "BOUND_EXCEEDED",
+        "pre_bound": 0.417028432194045,
+        "post_bound": 0.417028432194045,
+        "bound_held": false,
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "reason": "pre-training safety bound exceeded tolerance before training",
+        "compute_savings_percent": 100.0,
+        "confidence": 1.0,
+        "recommended_action": "full_retrain"
+      },
+      "equivalence_gap": 0.9567701572917053,
+      "forgetting": 0.0,
+      "compute_savings_percent": 100.0
+    }
+  ],
+  "final_summary": {
+    "mean_delta_top1": 0.2107,
+    "mean_full_retrain_top1": 0.1926,
+    "mean_equivalence_gap": 0.9126525060875127,
+    "mean_compute_savings": 49.344053398077556,
+    "decisions": [
+      "SAFE_DELTA",
+      "BOUND_EXCEEDED"
+    ],
+    "total_wall_time_delta": 98.71680903434753,
+    "total_wall_time_full_retrain": 282.2161362171173
+  }
+}

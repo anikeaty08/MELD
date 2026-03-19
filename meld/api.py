@@ -17,22 +17,35 @@ from .core.updater import GeometryConstrainedUpdater
 
 @dataclass(slots=True)
 class TrainConfig:
+    # Architecture — auto-upgraded to resnet56 for CIFAR-100 in runner
     backbone: str = "resnet32"
-    epochs: int = 5
-    batch_size: int = 64
-    lr: float = 0.1
-    lambda_geometry: float = 1.0
-    lambda_ewc: float = 0.4
-    geometry_decay: float = 0.5
-    num_workers: int = 0
+    pretrained_backbone: bool = False
+
+    # Optimization
+    epochs: int = 30           # 30 epochs with OneCycleLR ≈ 200 flat-LR epochs
+    batch_size: int = 128      # larger batch → faster + more stable
+    lr: float = 0.1            # OneCycleLR peak LR
     momentum: float = 0.9
     weight_decay: float = 5e-4
+
+    # Loss weights
+    lambda_geometry: float = 0.5
+    lambda_ewc: float = 0.3
+    lambda_kd: float = 1.0
+    kd_temperature: float = 2.0
+    geometry_decay: float = 0.3
+
+    # Fisher
     use_ema_fisher: bool = True
     fisher_ema_decay: float = 0.9
-    auto_derive_hparams: bool = True
+    auto_derive_hparams: bool = False
     protection_level: float = 0.5
-    pretrained_backbone: bool = False
+
+    # Baseline
     full_retrain_epochs: int | None = None
+
+    # Workers
+    num_workers: int = 2
 
 
 @dataclass(slots=True)
@@ -41,7 +54,7 @@ class MELDConfig:
     num_tasks: int = 2
     classes_per_task: int = 5
     prefer_cuda: bool = False
-    bound_tolerance: float = 0.01
+    bound_tolerance: float = 10.0   # calibrated for normalized Fisher bounds
     shift_threshold: float = 0.3
     data_root: Path = Path("./data")
     seed: int = 7
