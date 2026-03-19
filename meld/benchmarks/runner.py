@@ -8,25 +8,28 @@ import random
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
-from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, TensorDataset
 
+from ..core.auto_config import derive_train_config
 from ..core.corrector import AnalyticNormCorrector
 from ..core.drift import KLManifoldDriftDetector
 from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
 from ..core.updater import GeometryConstrainedUpdater
-from ..core.auto_config import derive_train_config
 from ..interfaces.base import Decision, DriftResult, TaskSnapshot, TrainArtifacts
 from ..modeling import MELDModel
 from ..models.backbone import resnet20, resnet32, resnet44, resnet56
 from ..models.classifier import IncrementalClassifier
 from .metrics import compute_classification_metrics, compute_compute_savings, compute_equivalence_gap
+
+if TYPE_CHECKING:
+    from ..api import MELDConfig
 
 
 BACKBONES = {
@@ -52,7 +55,7 @@ def _auto_backbone(dataset: str) -> str:
 class BenchmarkRunner:
     def __init__(
         self,
-        config: Any,
+        config: "MELDConfig",
         snapshot_strategy: FisherManifoldSnapshot | None = None,
         safety_oracle: SpectralSafetyOracle | None = None,
         updater: GeometryConstrainedUpdater | None = None,
@@ -69,7 +72,7 @@ class BenchmarkRunner:
         self.deploy_policy = deploy_policy or FourStateDeployPolicy()
         if config.prefer_cuda and torch.cuda.is_available():
             self.device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
@@ -172,8 +175,14 @@ class BenchmarkRunner:
                 )
                 delta_metrics["wall_time_seconds"] = delta_artifacts.wall_time_seconds
                 task_result = self._task_result(
-                    task_id, delta_metrics, full_metrics,
-                    snapshot_after, pre_bound, post_bound, drift_result, decision,
+                    task_id,
+                    delta_metrics,
+                    full_metrics,
+                    snapshot_after,
+                    pre_bound,
+                    post_bound,
+                    drift_result,
+                    decision,
                 )
                 results["tasks"].append(task_result)
                 self._write_results(results_path, results)
@@ -188,8 +197,14 @@ class BenchmarkRunner:
                 delta_artifacts.wall_time_seconds, full_time
             )
             task_result = self._task_result(
-                task_id, delta_metrics, full_metrics,
-                snapshot_after, pre_bound, post_bound, drift_result, decision,
+                task_id,
+                delta_metrics,
+                full_metrics,
+                snapshot_after,
+                pre_bound,
+                post_bound,
+                drift_result,
+                decision,
             )
             results["tasks"].append(task_result)
             self._write_results(results_path, results)
@@ -200,10 +215,25 @@ class BenchmarkRunner:
         return results
 
     def _build_model(self) -> MELDModel:
-        backbone_name = getattr(self.config.train, "backbone", "resnet32")
+        backbone_name: str = self.config.train.backbone
         if backbone_name == "resnet32":
-            backbone_name = _auto_backbone(self.config.dataset)
-        pretrained = getattr(self.config.train, "pretrained_backbone", False)
+            suggested = _auto_backbone(self.config.dataset)
+            if suggested != backbone_name:
+                import warnings
+
+                warnings.warn(
+                    f"backbone='resnet32' was auto-upgraded to '{suggested}' "
+                    f"for dataset '{self.config.dataset}'. "
+                    "Set TrainConfig(backbone=...) explicitly to suppress this.",
+                    stacklevel=2,
+                )
+                backbone_name = suggested
+        if backbone_name not in BACKBONES:
+            raise ValueError(
+                f"Unknown backbone '{backbone_name}'. "
+                f"Valid choices: {sorted(BACKBONES)}"
+            )
+        pretrained: bool = self.config.train.pretrained_backbone
         backbone = BACKBONES[backbone_name](pretrained=pretrained)
         classifier = IncrementalClassifier(backbone.out_dim)
         return MELDModel(backbone, classifier).to(self.device)
@@ -212,48 +242,65 @@ class BenchmarkRunner:
         bundle = self._load_dataset_bundle()
         train_tasks, eval_tasks = [], []
         for train_ds, test_ds in bundle:
-            train_tasks.append(DataLoader(
-                train_ds,
-                batch_size=self.config.train.batch_size,
-                shuffle=True,
-                num_workers=self.config.train.num_workers,
-            ))
-            eval_tasks.append(DataLoader(
-                test_ds,
-                batch_size=self.config.train.batch_size,
-                shuffle=False,
-                num_workers=self.config.train.num_workers,
-            ))
+            train_tasks.append(
+                DataLoader(
+                    train_ds,
+                    batch_size=self.config.train.batch_size,
+                    shuffle=True,
+                    num_workers=self.config.train.num_workers,
+                )
+            )
+            eval_tasks.append(
+                DataLoader(
+                    test_ds,
+                    batch_size=self.config.train.batch_size,
+                    shuffle=False,
+                    num_workers=self.config.train.num_workers,
+                )
+            )
         return train_tasks, eval_tasks
 
     def _load_dataset_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
         try:
             from continuum import ClassIncremental
             from continuum.datasets import CIFAR10, CIFAR100
+        except ModuleNotFoundError as exc:
+            import warnings
 
-            d = self.config.dataset.upper().replace("-", "")
-            if d == "CIFAR10":
-                tr = CIFAR10(data_path=str(self.config.data_root), train=True, download=True)
-                te = CIFAR10(data_path=str(self.config.data_root), train=False, download=True)
-                mean, std = _CIFAR10_MEAN, _CIFAR10_STD
-            elif d == "CIFAR100":
-                tr = CIFAR100(data_path=str(self.config.data_root), train=True, download=True)
-                te = CIFAR100(data_path=str(self.config.data_root), train=False, download=True)
-                mean, std = _CIFAR100_MEAN, _CIFAR100_STD
-            else:
-                raise ValueError(f"Unsupported dataset: {self.config.dataset}")
+            warnings.warn(
+                f"Continuum not installed ({exc}). "
+                "Falling back to synthetic data. "
+                "Install with: pip install continuum-learn",
+                stacklevel=2,
+            )
+            return self._synthetic_bundle()
 
-            s_tr = ClassIncremental(tr, increment=self.config.classes_per_task, transformations=None)
-            s_te = ClassIncremental(te, increment=self.config.classes_per_task, transformations=None)
-            bundle = []
-            for i in range(min(len(s_tr), self.config.num_tasks)):
-                bundle.append((
+        d = self.config.dataset.upper().replace("-", "")
+        if d == "CIFAR10":
+            tr = CIFAR10(data_path=str(self.config.data_root), train=True, download=True)
+            te = CIFAR10(data_path=str(self.config.data_root), train=False, download=True)
+            mean, std = _CIFAR10_MEAN, _CIFAR10_STD
+        elif d == "CIFAR100":
+            tr = CIFAR100(data_path=str(self.config.data_root), train=True, download=True)
+            te = CIFAR100(data_path=str(self.config.data_root), train=False, download=True)
+            mean, std = _CIFAR100_MEAN, _CIFAR100_STD
+        else:
+            raise ValueError(
+                f"Unsupported dataset '{self.config.dataset}'. "
+                "Supported: CIFAR-10, CIFAR-100."
+            )
+
+        s_tr = ClassIncremental(tr, increment=self.config.classes_per_task, transformations=None)
+        s_te = ClassIncremental(te, increment=self.config.classes_per_task, transformations=None)
+        bundle: list[tuple[Dataset[Any], Dataset[Any]]] = []
+        for i in range(min(len(s_tr), self.config.num_tasks)):
+            bundle.append(
+                (
                     _TaskDatasetAdapter(s_tr[i], mean=mean, std=std, is_train=True),
                     _TaskDatasetAdapter(s_te[i], mean=mean, std=std, is_train=False),
-                ))
-            return bundle
-        except Exception:
-            return self._synthetic_bundle()
+                )
+            )
+        return bundle
 
     def _synthetic_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
         torch.manual_seed(self.config.seed)
@@ -268,10 +315,12 @@ class BenchmarkRunner:
                 ty.append(torch.full((32,), cid, dtype=torch.long))
                 ex.append(base + 0.05 * torch.randn(16, 3, 32, 32))
                 ey.append(torch.full((16,), cid, dtype=torch.long))
-            tasks.append((
-                TensorDataset(torch.cat(tx), torch.cat(ty)),
-                TensorDataset(torch.cat(ex), torch.cat(ey)),
-            ))
+            tasks.append(
+                (
+                    TensorDataset(torch.cat(tx), torch.cat(ty)),
+                    TensorDataset(torch.cat(ex), torch.cat(ey)),
+                )
+            )
         return tasks
 
     def _run_full_retrain_baseline(
@@ -322,28 +371,25 @@ class BenchmarkRunner:
         return metrics
 
     def _merged_loader(self, loaders: list[DataLoader], shuffle: bool = False) -> DataLoader:
-        xs, ys = [], []
-        for loader in loaders:
-            ds = loader.dataset
-            if isinstance(ds, TensorDataset):
-                x, y = ds.tensors
-                xs.append(x)
-                ys.append(y)
-            else:
-                bx, by = [], []
-                for inp, tgt in loader:
-                    bx.append(inp)
-                    by.append(tgt)
-                xs.append(torch.cat(bx))
-                ys.append(torch.cat(by))
+        combined = ConcatDataset([loader.dataset for loader in loaders])
         return DataLoader(
-            TensorDataset(torch.cat(xs), torch.cat(ys)),
+            combined,
             batch_size=self.config.train.batch_size,
             shuffle=shuffle,
             num_workers=self.config.train.num_workers,
         )
 
-    def _task_result(self, task_id, delta_metrics, full_metrics, snapshot, pre_bound, post_bound, drift_result, decision):
+    def _task_result(
+        self,
+        task_id: int,
+        delta_metrics: dict[str, Any],
+        full_metrics: dict[str, Any],
+        snapshot: TaskSnapshot | None,
+        pre_bound: float,
+        post_bound: float,
+        drift_result: DriftResult,
+        decision: Decision,
+    ) -> dict[str, Any]:
         dc = np.asarray(delta_metrics["confusion_matrix"])
         fc = np.asarray(full_metrics["confusion_matrix"])
         return {
@@ -359,7 +405,7 @@ class BenchmarkRunner:
             "compute_savings_percent": decision.compute_savings_percent,
         }
 
-    def _summarize(self, tasks):
+    def _summarize(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
         if not tasks:
             return {}
         return {
@@ -372,10 +418,19 @@ class BenchmarkRunner:
             "total_wall_time_full_retrain": float(np.sum([t["full_retrain"]["wall_time_seconds"] for t in tasks])),
         }
 
-    def _config_dict(self):
-        return {"dataset": self.config.dataset, "num_tasks": self.config.num_tasks, "classes_per_task": self.config.classes_per_task, "bound_tolerance": self.config.bound_tolerance, "shift_threshold": self.config.shift_threshold, "prefer_cuda": self.config.prefer_cuda, "seed": self.config.seed, "train": asdict(self.config.train)}
+    def _config_dict(self) -> dict[str, Any]:
+        return {
+            "dataset": self.config.dataset,
+            "num_tasks": self.config.num_tasks,
+            "classes_per_task": self.config.classes_per_task,
+            "bound_tolerance": self.config.bound_tolerance,
+            "shift_threshold": self.config.shift_threshold,
+            "prefer_cuda": self.config.prefer_cuda,
+            "seed": self.config.seed,
+            "train": asdict(self.config.train),
+        }
 
-    def _write_results(self, results_path, payload):
+    def _write_results(self, results_path: str | Path | None, payload: dict[str, Any]) -> None:
         if results_path is None:
             return
         path = Path(results_path)
@@ -386,34 +441,59 @@ class BenchmarkRunner:
 
 
 class _PolicyConfigProxy:
-    def __init__(self, shift_threshold, delta_wall_time_seconds, full_retrain_wall_time_seconds):
+    def __init__(
+        self,
+        shift_threshold: float,
+        delta_wall_time_seconds: float,
+        full_retrain_wall_time_seconds: float,
+    ) -> None:
         self.shift_threshold = shift_threshold
         self.delta_wall_time_seconds = delta_wall_time_seconds
         self.full_retrain_wall_time_seconds = full_retrain_wall_time_seconds
 
 
 class _ConfigView:
-    def __init__(self, values):
+    """Thin attribute-access wrapper around a plain dict (for baseline config)."""
+
+    def __init__(self, values: dict[str, Any]) -> None:
         for k, v in values.items():
             setattr(self, k, v)
 
 
 class _TaskDatasetAdapter(Dataset[Any]):
-    """CIFAR dataset adapter with proper train/eval augmentation."""
+    """Wraps a Continuum task dataset with CIFAR-standard augmentation.
 
-    def __init__(self, dataset, mean=_CIFAR10_MEAN, std=_CIFAR10_STD, is_train=False, normalize=True):
+    Training split:  random crop (pad=4, reflect) + random h-flip + normalize
+    Eval split:      normalize only
+
+    Args:
+        dataset:   A Continuum task dataset (supports __len__ and __getitem__).
+        mean:      Per-channel mean for normalization (default: CIFAR-10 stats).
+        std:       Per-channel std  for normalization (default: CIFAR-10 stats).
+        is_train:  If True, applies random crop and flip augmentation.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset[Any],
+        mean: tuple[float, float, float] = _CIFAR10_MEAN,
+        std: tuple[float, float, float] = _CIFAR10_STD,
+        is_train: bool = False,
+    ) -> None:
         self.dataset = dataset
         self.mean = mean
         self.std = std
         self.is_train = is_train
 
-    def __len__(self):
-        return len(self.dataset)
+    def __len__(self) -> int:
+        return len(self.dataset)  # type: ignore[arg-type]
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         sample = self.dataset[index]
         if not isinstance(sample, tuple):
-            raise TypeError("Expected tuple")
+            raise TypeError(
+                f"Expected dataset sample to be a tuple, got {type(sample).__name__}."
+            )
         inputs, target = sample[0], sample[1]
         tensor = self._to_tensor(inputs)
 
@@ -430,7 +510,7 @@ class _TaskDatasetAdapter(Dataset[Any]):
         tensor = (tensor - mean_t) / std_t
         return tensor, int(target)
 
-    def _to_tensor(self, value):
+    def _to_tensor(self, value: Any) -> torch.Tensor:
         if isinstance(value, torch.Tensor):
             t = value.float()
             if t.max().item() > 2.0:
