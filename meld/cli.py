@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Keep CLI default aligned with MELDConfig default (too-small values skip delta
     # training almost immediately and make comparisons misleading).
     parser.add_argument("--bound-tolerance", type=float, default=10.0)
+    parser.add_argument("--pac-gate-tolerance", type=float, default=0.5)
     parser.add_argument("--shift-threshold", type=float, default=0.3)
     parser.add_argument("--lambda-geometry", type=float, default=1.0)
     parser.add_argument("--lambda-ewc", type=float, default=0.4)
@@ -50,6 +51,7 @@ def main() -> None:
         classes_per_task=args.classes_per_task,
         prefer_cuda=args.prefer_cuda,
         bound_tolerance=args.bound_tolerance,
+        pac_gate_tolerance=args.pac_gate_tolerance,
         shift_threshold=args.shift_threshold,
         data_root=Path(args.data_root),
         database_path=Path(args.database_path) if args.database_path else None,

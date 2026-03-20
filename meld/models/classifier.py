@@ -20,6 +20,10 @@ class IncrementalClassifier(nn.Module):
         head = nn.Linear(self.in_dim, nb_new_classes)
         nn.init.kaiming_normal_(head.weight, nonlinearity="linear")
         nn.init.constant_(head.bias, 0.0)
+        # Move new head to the same device as the rest of the model
+        # so MPS / CUDA runs don't get a CPU/device mismatch on task 1+.
+        if self.heads:
+            head = head.to(next(self.heads.parameters()).device)
         head_index = len(self.heads)
         self.heads.append(head)
         class_ids = list(range(self.next_class_id, self.next_class_id + nb_new_classes))

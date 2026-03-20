@@ -55,6 +55,10 @@ CIFAR-10-C/
 
 # Reference clones and local scratch files
 _delta_ref/
-
+final_cifar_results.json
+final_synthetic_results.json
+final_cifar100_results.json
+final.txt
+solnnn
 prompt
 test_backbone_pretrained.py
