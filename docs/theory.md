@@ -78,3 +78,7 @@ choose `SAFE_DELTA`, `CAUTIOUS_DELTA`, `BOUND_VIOLATED`, `SHIFT_CRITICAL`, or
 This estimate is empirically calibrated and not a formal PAC guarantee. A
 formal guarantee would require proving that the importance-weighted delta loss
 concentrates around the full-data loss, which is left as future work.
+
+<div align="center">
+  <h3>with love Anikeat ❤️</h3>
+</div>

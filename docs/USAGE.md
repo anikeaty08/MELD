@@ -99,3 +99,7 @@ Then open [http://127.0.0.1:8080](http://127.0.0.1:8080).
 - Run `python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data` after install if you want the datasets ready before the first benchmark.
 - Other dataset names currently fall back to the synthetic incremental dataset for development.
 - The synthetic path is intentionally useful for smoke tests, API checks, and dashboard wiring.
+
+<div align="center">
+  <h3>with love Anikeat ❤️</h3>
+</div>

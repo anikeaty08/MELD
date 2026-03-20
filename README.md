@@ -367,7 +367,8 @@ Open tuning areas:
 
 - harder real-data continual stability
 - tighter equivalence to full retrain over long task sequences
-- deeper Avalanche baseline coverage
+- deeper Avalanche baseline coverage 
+
 ### Python API
 
 ```python
@@ -491,3 +492,7 @@ Open tuning areas:
 - harder real-data continual stability
 - tighter equivalence to full retrain over long task sequences
 - deeper Avalanche baseline coverage
+
+<div align="center">
+  <h3>with love Anikeat ❤️</h3>
+</div>

@@ -48,6 +48,7 @@ class TrainConfig:
     fisher_ema_decay: float = 0.9
     auto_derive_hparams: bool = True
     protection_level: float = 0.5
+    enable_grad_projection: bool = False
 
     full_retrain_epochs: int | None = None
     num_workers: int = 0
