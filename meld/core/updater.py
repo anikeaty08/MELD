@@ -193,6 +193,9 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         ce_hist: list[float] = []
         loss_hist: list[float] = []
         cached_geo = torch.tensor(0.0, device=device)
+        train_acc_hist: list[float] = []
+        projected_steps = 0
+        total_steps = 0
 
         best_val = float("inf")
         bad_epochs = 0
@@ -207,6 +210,8 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             ce_t = 0.0
             geo_t = 0.0
             ewc_t = 0.0
+            correct = 0
+            seen = 0
 
             for bidx, (inputs, targets) in enumerate(train_loader):
                 inputs = inputs.to(device)
@@ -222,6 +227,9 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 logits = model.classifier(embeddings)
 
                 ce = lam_m * criterion(logits, ta) + (1 - lam_m) * criterion(logits, tb)
+                preds = logits.argmax(dim=1)
+                correct += int((preds == targets).sum().item())
+                seen += int(targets.numel())
 
                 geo = torch.tensor(0.0, device=device)
                 ewc = torch.tensor(0.0, device=device)
@@ -242,7 +250,6 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                     reg_grads = torch.autograd.grad(reg_loss, params, retain_graph=False, allow_unused=True)
 
                     # PCGrad-style projection: if gradients conflict, project reg away from ce.
-                    conflict = 0
                     for p, gce, grec in zip(params, ce_grads, reg_grads):
                         if gce is None and grec is None:
                             continue
@@ -254,7 +261,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                             continue
                         dot = (gce * grec).sum()
                         if dot.item() < 0:
-                            conflict += 1
+                            projected_steps += 1
                             gce_norm2 = (gce * gce).sum() + 1e-12
                             grec_proj = grec - (dot / gce_norm2) * gce
                             p.grad = gce + grec_proj
@@ -262,6 +269,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                             p.grad = gce + grec
                 else:
                     total_loss.backward()
+                total_steps += 1
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
@@ -276,6 +284,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             ce_hist.append(ce_t / n)
             geo_hist.append(geo_t / n)
             ewc_hist.append(ewc_t / n)
+            train_acc_hist.append(float(correct / max(1, seen)))
             epochs_run = epoch + 1
 
             # Early stopping check.
@@ -308,6 +317,8 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             geometry_loss_per_epoch=geo_hist[:epochs_run] if epochs_run > 0 else geo_hist,
             ewc_loss_per_epoch=ewc_hist[:epochs_run] if epochs_run > 0 else ewc_hist,
             ce_loss_per_epoch=ce_hist[:epochs_run] if epochs_run > 0 else ce_hist,
+            train_accuracy_per_epoch=train_acc_hist[:epochs_run] if epochs_run > 0 else train_acc_hist,
+            projected_step_fraction=float(projected_steps / max(1, total_steps)),
             wall_time_seconds=time.time() - start,
             loss_history=loss_hist,
         )
@@ -420,10 +431,13 @@ class FullRetrainUpdater(ManifoldUpdater):
         start = time.time()
         ce_hist: list[float] = []
         loss_hist: list[float] = []
+        train_acc_hist: list[float] = []
 
         for _epoch in range(epochs):
             model.train()
             ce_t = 0.0
+            correct = 0
+            seen = 0
 
             for inputs, targets in new_data_loader:
                 inputs = inputs.to(device)
@@ -433,6 +447,9 @@ class FullRetrainUpdater(ManifoldUpdater):
                 embeddings = model.embed(inputs)
                 logits = model.classifier(embeddings)
                 ce = criterion(logits, targets)
+                preds = logits.argmax(dim=1)
+                correct += int((preds == targets).sum().item())
+                seen += int(targets.numel())
                 ce.backward()
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -444,6 +461,7 @@ class FullRetrainUpdater(ManifoldUpdater):
 
             n = max(1, len(new_data_loader))
             ce_hist.append(ce_t / n)
+            train_acc_hist.append(float(correct / max(1, seen)))
 
         return model, TrainArtifacts(
             epochs_run=epochs,
@@ -451,6 +469,8 @@ class FullRetrainUpdater(ManifoldUpdater):
             geometry_loss_per_epoch=[],
             ewc_loss_per_epoch=[],
             ce_loss_per_epoch=ce_hist,
+            train_accuracy_per_epoch=train_acc_hist,
+            projected_step_fraction=None,
             wall_time_seconds=time.time() - start,
             loss_history=loss_hist,
         )

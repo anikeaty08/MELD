@@ -27,9 +27,12 @@ ROOT_TEMPLATE = """
     <label>Epochs <input name="epochs" type="number" value="1"></label><br>
     <label>Batch size <input name="batch_size" type="number" value="8"></label><br>
     <label>Backbone <input name="backbone" value="resnet20"></label><br>
+    <label>Pretrained backbone <input name="pretrained_backbone" type="checkbox"></label><br>
     <button type="submit">Launch</button>
   </form>
-  <p><a href="/monitor">Monitor</a> | <a href="/results">Results</a></p>
+  <p><a href="/monitor">Monitor</a> | <a href="/results">Results JSON</a> | <a href="/results/csv">Export CSV</a></p>
+  <h3>Bound Timeline</h3>
+  <canvas id="bound-chart" width="800" height="240" style="border:1px solid #ddd"></canvas>
   <pre id="status"></pre>
   <script>
     const form = document.getElementById("run-form");
@@ -40,6 +43,7 @@ ROOT_TEMPLATE = """
       payload.num_tasks = Number(payload.num_tasks);
       payload.classes_per_task = Number(payload.classes_per_task);
       payload.epochs = Number(payload.epochs);
+      payload.pretrained_backbone = form.elements.pretrained_backbone.checked;
       const response = await fetch("/api/run", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -47,6 +51,49 @@ ROOT_TEMPLATE = """
       });
       status.textContent = JSON.stringify(await response.json(), null, 2);
     });
+    async function refreshBoundChart() {
+      const response = await fetch("/results");
+      const data = await response.json();
+      const timeline = Array.isArray(data.bounds_timeline) ? data.bounds_timeline : [];
+      const canvas = document.getElementById("bound-chart");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!timeline.length) {
+        ctx.fillText("No bound data yet.", 10, 24);
+        return;
+      }
+      const xs = timeline.map(p => Number(p.task_id));
+      const ys1 = timeline.map(p => Number(p.epsilon_max || 0));
+      const ys2 = timeline.map(p => Number(p.epsilon_actual || 0));
+      const yMax = Math.max(1e-6, ...ys1, ...ys2);
+      const margin = 30;
+      const w = canvas.width - margin * 2;
+      const h = canvas.height - margin * 2;
+      function xPx(i) { return margin + (w * i / Math.max(1, xs.length - 1)); }
+      function yPx(y) { return margin + h - (h * y / yMax); }
+      ctx.strokeStyle = "#999";
+      ctx.beginPath();
+      ctx.moveTo(margin, margin);
+      ctx.lineTo(margin, margin + h);
+      ctx.lineTo(margin + w, margin + h);
+      ctx.stroke();
+      function drawLine(vals, color) {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        vals.forEach((v, i) => {
+          const x = xPx(i);
+          const y = yPx(v);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      drawLine(ys1, "#d33");
+      drawLine(ys2, "#36c");
+      ctx.fillStyle = "#000";
+      ctx.fillText("red: epsilon_max, blue: epsilon_actual", margin, 16);
+    }
+    refreshBoundChart();
+    setInterval(refreshBoundChart, 2000);
   </script>
 </body>
 </html>
@@ -57,11 +104,52 @@ MONITOR_TEMPLATE = """
 <head><title>MELD Monitor</title></head>
 <body>
   <h1>Live Monitor</h1>
+  <p><a href="/results/csv">Export CSV</a></p>
+  <canvas id="acc-chart" width="800" height="240" style="border:1px solid #ddd"></canvas>
   <pre id="stream">Waiting for updates...</pre>
   <script>
     const target = document.getElementById("stream");
     const source = new EventSource("/api/state/stream");
-    source.onmessage = (event) => { target.textContent = event.data; };
+    const canvas = document.getElementById("acc-chart");
+    const ctx = canvas.getContext("2d");
+    function drawAcc(history) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!Array.isArray(history) || !history.length) {
+        ctx.fillText("No epoch history yet.", 10, 24);
+        return;
+      }
+      const all = [];
+      history.forEach(h => (h.delta && Array.isArray(h.delta.train_accuracy_per_epoch)) && all.push(...h.delta.train_accuracy_per_epoch));
+      if (!all.length) {
+        ctx.fillText("No training accuracy yet.", 10, 24);
+        return;
+      }
+      const margin = 30, w = canvas.width - margin*2, h = canvas.height - margin*2;
+      ctx.strokeStyle = "#999";
+      ctx.beginPath(); ctx.moveTo(margin, margin); ctx.lineTo(margin, margin+h); ctx.lineTo(margin+w, margin+h); ctx.stroke();
+      let offset = 0;
+      history.forEach((task, taskIdx) => {
+        const vals = (task.delta && task.delta.train_accuracy_per_epoch) || [];
+        if (!vals.length) return;
+        ctx.strokeStyle = ["#d33","#36c","#2a2","#a3a","#f80"][taskIdx % 5];
+        ctx.beginPath();
+        vals.forEach((v, i) => {
+          const x = margin + (w * (offset + i) / Math.max(1, all.length - 1));
+          const y = margin + h - (h * Math.max(0, Math.min(1, Number(v))));
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        offset += vals.length;
+      });
+    }
+    source.onmessage = (event) => {
+      target.textContent = event.data;
+      try {
+        const payload = JSON.parse(event.data);
+        const history = payload.results && payload.results.epoch_history;
+        drawAcc(history);
+      } catch (_) {}
+    };
   </script>
 </body>
 </html>
@@ -122,6 +210,11 @@ def _build_run_command(payload: dict[str, Any]) -> list[str]:
         str(int(payload.get("batch_size", 8))),
         "--backbone",
         str(payload.get("backbone", "resnet20")),
+        *(
+            ["--pretrained-backbone"]
+            if bool(payload.get("pretrained_backbone", False))
+            else []
+        ),
         "--results-path",
         str(RESULTS_PATH),
     ]
@@ -143,6 +236,40 @@ def results() -> JSONResponse:
     if not RESULTS_PATH.exists():
         return JSONResponse({"status": "no_results"})
     return JSONResponse(json.loads(RESULTS_PATH.read_text(encoding="utf-8")))
+
+
+@app.get("/results/csv")
+def results_csv() -> StreamingResponse:
+    if not RESULTS_PATH.exists():
+        raise HTTPException(status_code=404, detail="No results.json found.")
+    payload = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
+    tasks = payload.get("tasks", [])
+    lines = [
+        "task_id,delta_top1,full_top1,pre_bound,post_bound,bound_held,compute_savings_percent"
+    ]
+    for t in tasks:
+        delta = t.get("delta", {}) if isinstance(t.get("delta"), dict) else {}
+        full = t.get("full_retrain", {}) if isinstance(t.get("full_retrain"), dict) else {}
+        oracle = t.get("oracle", {}) if isinstance(t.get("oracle"), dict) else {}
+        lines.append(
+            ",".join(
+                [
+                    str(t.get("task_id", "")),
+                    str(delta.get("top1", "")),
+                    str(full.get("top1", "")),
+                    str(oracle.get("pre_bound", "")),
+                    str(oracle.get("post_bound", "")),
+                    str(oracle.get("bound_held", "")),
+                    str(t.get("compute_savings_percent", "")),
+                ]
+            )
+        )
+    data = ("\n".join(lines) + "\n").encode("utf-8")
+    return StreamingResponse(
+        iter([data]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=meld_results.csv"},
+    )
 
 
 @app.get("/api/state")

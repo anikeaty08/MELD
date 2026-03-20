@@ -7,7 +7,7 @@ import os
 import random
 import time
 import functools
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +34,7 @@ from .metrics import (
     compute_ece_maybe,
 )
 from .robustness import evaluate_cifar_c
+from .avalanche_baselines import run_avalanche_baselines
 
 if TYPE_CHECKING:
     from ..api import MELDConfig
@@ -118,6 +119,8 @@ class BenchmarkRunner:
             "status": "running",
             "config": self._config_dict(),
             "tasks": [],
+            "bounds_timeline": [],
+            "epoch_history": [],
             "final_summary": None,
         }
         self._write_results(results_path, results)
@@ -162,7 +165,17 @@ class BenchmarkRunner:
                 task_train_config = self.config.train
 
             if task_id > 0 and pre_bound > self.config.bound_tolerance:
-                delta_artifacts = TrainArtifacts(0, [], [], [], [], 0.0, skipped=True)
+                delta_artifacts = TrainArtifacts(
+                    epochs_run=0,
+                    lambda_schedule=[],
+                    geometry_loss_per_epoch=[],
+                    ewc_loss_per_epoch=[],
+                    ce_loss_per_epoch=[],
+                    wall_time_seconds=0.0,
+                    train_accuracy_per_epoch=[],
+                    projected_step_fraction=None,
+                    skipped=True,
+                )
                 snapshot_after = snapshot_before
                 post_bound = pre_bound
                 drift_result = DriftResult(0.0, False, {}, "none")
@@ -282,8 +295,31 @@ class BenchmarkRunner:
                     decision,
                     delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
                     cil_metrics=cil_metrics,
+                    train_artifacts=delta_artifacts,
                 )
                 results["tasks"].append(task_result)
+                results["bounds_timeline"].append(
+                    {
+                        "task_id": task_id,
+                        "epsilon_max": float(pre_bound),
+                        "epsilon_actual": float(post_bound),
+                        "bound_held": bool(decision.bound_held if task_id > 0 else True),
+                    }
+                )
+                results["epoch_history"].append(
+                    {
+                        "task_id": task_id,
+                        "delta": {
+                            "epochs_run": int(delta_artifacts.epochs_run),
+                            "ce_loss_per_epoch": list(delta_artifacts.ce_loss_per_epoch),
+                            "geometry_loss_per_epoch": list(delta_artifacts.geometry_loss_per_epoch),
+                            "ewc_loss_per_epoch": list(delta_artifacts.ewc_loss_per_epoch),
+                            "train_accuracy_per_epoch": list(delta_artifacts.train_accuracy_per_epoch),
+                            "projected_step_fraction": delta_artifacts.projected_step_fraction,
+                            "skipped": bool(delta_artifacts.skipped),
+                        },
+                    }
+                )
                 self._write_results(results_path, results)
                 last_drift_score = float(drift_result.shift_score)
                 continue
@@ -353,8 +389,31 @@ class BenchmarkRunner:
                 decision,
                 delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
                 cil_metrics=cil_metrics,
+                train_artifacts=delta_artifacts,
             )
             results["tasks"].append(task_result)
+            results["bounds_timeline"].append(
+                {
+                    "task_id": task_id,
+                    "epsilon_max": float(pre_bound),
+                    "epsilon_actual": float(post_bound),
+                    "bound_held": bool(decision.bound_held if task_id > 0 else True),
+                }
+            )
+            results["epoch_history"].append(
+                {
+                    "task_id": task_id,
+                    "delta": {
+                        "epochs_run": int(delta_artifacts.epochs_run),
+                        "ce_loss_per_epoch": list(delta_artifacts.ce_loss_per_epoch),
+                        "geometry_loss_per_epoch": list(delta_artifacts.geometry_loss_per_epoch),
+                        "ewc_loss_per_epoch": list(delta_artifacts.ewc_loss_per_epoch),
+                        "train_accuracy_per_epoch": list(delta_artifacts.train_accuracy_per_epoch),
+                        "projected_step_fraction": delta_artifacts.projected_step_fraction,
+                        "skipped": bool(delta_artifacts.skipped),
+                    },
+                }
+            )
             self._write_results(results_path, results)
             last_drift_score = float(drift_result.shift_score)
 
@@ -370,6 +429,10 @@ class BenchmarkRunner:
             )
         except Exception as exc:
             results["robustness"] = {"status": "skipped", "reason": f"Robustness eval failed: {exc}"}
+        results["baselines"] = run_avalanche_baselines(
+            config=self.config,
+            device=self.device,
+        )
         self._write_results(results_path, results)
         return results
 
@@ -524,10 +587,9 @@ class BenchmarkRunner:
             train_loader = self._merged_loader(train_loaders, shuffle=True)
 
         baseline_epochs = self.config.train.full_retrain_epochs or self.config.train.epochs
-        cfg = asdict(self.config.train)
-        cfg["epochs"] = baseline_epochs
+        train_cfg = replace(self.config.train, epochs=baseline_epochs)
         start = time.time()
-        bm, _ = self.full_retrain_updater.update(bm, train_loader, None, _ConfigView(cfg))
+        bm, _ = self.full_retrain_updater.update(bm, train_loader, None, train_cfg)
         wall = time.time() - start
         self._baseline_model_cache = bm.clone()
         metrics = self._evaluate(
@@ -596,6 +658,7 @@ class BenchmarkRunner:
         decision: Decision,
         delta_wall_time_seconds: float,
         cil_metrics: dict[str, Any] | None = None,
+        train_artifacts: TrainArtifacts | None = None,
     ) -> dict[str, Any]:
         fc = np.asarray(full_metrics["confusion_matrix"])
         if delta_metrics is not None:
@@ -635,6 +698,15 @@ class BenchmarkRunner:
             "forgetting": forgetting,
             "compute_savings_percent": decision.compute_savings_percent,
             "cil_metrics": cil_metrics,
+            "train": {
+                "epochs_run": train_artifacts.epochs_run if train_artifacts else 0,
+                "ce_loss_per_epoch": train_artifacts.ce_loss_per_epoch if train_artifacts else [],
+                "geometry_loss_per_epoch": train_artifacts.geometry_loss_per_epoch if train_artifacts else [],
+                "ewc_loss_per_epoch": train_artifacts.ewc_loss_per_epoch if train_artifacts else [],
+                "train_accuracy_per_epoch": train_artifacts.train_accuracy_per_epoch if train_artifacts else [],
+                "projected_step_fraction": train_artifacts.projected_step_fraction if train_artifacts else None,
+                "skipped": train_artifacts.skipped if train_artifacts else False,
+            },
         }
 
     def _summarize(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -693,14 +765,6 @@ class _PolicyConfigProxy:
         self.shift_threshold = shift_threshold
         self.delta_wall_time_seconds = delta_wall_time_seconds
         self.full_retrain_wall_time_seconds = full_retrain_wall_time_seconds
-
-
-class _ConfigView:
-    """Thin attribute-access wrapper around a plain dict (for baseline config)."""
-
-    def __init__(self, values: dict[str, Any]) -> None:
-        for k, v in values.items():
-            setattr(self, k, v)
 
 
 class _TaskDatasetAdapter(Dataset[Any]):

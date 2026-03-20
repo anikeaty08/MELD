@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--backbone", default="resnet32")
+    parser.add_argument("--pretrained-backbone", action="store_true")
     # Keep CLI default aligned with MELDConfig default (too-small values skip delta
     # training almost immediately and make comparisons misleading).
     parser.add_argument("--bound-tolerance", type=float, default=10.0)
@@ -41,6 +42,7 @@ def main() -> None:
         shift_threshold=args.shift_threshold,
         train=TrainConfig(
             backbone=args.backbone,
+            pretrained_backbone=args.pretrained_backbone,
             epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,

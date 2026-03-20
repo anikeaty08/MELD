@@ -72,6 +72,8 @@ class TrainArtifacts:
     ewc_loss_per_epoch: list[float]
     ce_loss_per_epoch: list[float]
     wall_time_seconds: float
+    train_accuracy_per_epoch: list[float] = field(default_factory=list)
+    projected_step_fraction: float | None = None
     loss_history: list[float] = field(default_factory=list)
     skipped: bool = False
 
