@@ -81,3 +81,47 @@ def test_pac_style_gap_reports_formal_metadata():
     assert estimate.value > 0.0
     assert estimate.bound_type == "pac_style_hoeffding"
     assert estimate.bound_is_formal is True
+
+
+def test_pac_equivalence_bound_uses_importance_weights_and_shift():
+    oracle = SpectralSafetyOracle()
+    before = TaskSnapshot(
+        task_id=0,
+        class_ids=[0],
+        class_means={0: np.array([1.0, 0.0])},
+        class_covs={0: np.array([1.0, 1.0])},
+        class_anchors={0: np.array([[1.0, 0.0]])},
+        class_anchor_logits={0: np.array([[1.0]])},
+        classifier_norms={0: 1.0},
+        fisher_diagonal=np.array([0.2, 0.3]),
+        fisher_eigenvalue_max=0.3,
+        mean_gradient_norm=0.25,
+        timestamp=0.0,
+        embedding_dim=2,
+        dataset_size=32,
+        steps_per_epoch=4,
+        parameter_reference=[np.array([0.0, 0.0]), np.array([1.0])],
+        importance_weights={0: np.array([0.5, 1.5, 1.0], dtype=np.float32)},
+    )
+    after = TaskSnapshot(
+        task_id=1,
+        class_ids=[0],
+        class_means={0: np.array([1.1, 0.1])},
+        class_covs={0: np.array([1.0, 1.0])},
+        class_anchors={0: np.array([[1.1, 0.1]])},
+        class_anchor_logits={0: np.array([[1.0]])},
+        classifier_norms={0: 1.0},
+        fisher_diagonal=np.array([0.2, 0.3]),
+        fisher_eigenvalue_max=0.3,
+        mean_gradient_norm=0.25,
+        timestamp=1.0,
+        embedding_dim=2,
+        dataset_size=32,
+        steps_per_epoch=4,
+        parameter_reference=[np.array([0.1, 0.0]), np.array([1.1])],
+    )
+    estimate = oracle.pac_equivalence_bound(before, after, delta=0.05)
+    assert estimate.value > 0.0
+    assert estimate.bound_type == "pac_importance_weighted"
+    assert estimate.bound_is_formal is True
+    assert estimate.delta == 0.05

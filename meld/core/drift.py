@@ -87,6 +87,70 @@ class MMDDriftDetector(DriftDetector):
         return float(math.sqrt(np.median(upper)))
 
 
+class PretrainingMMDDriftDetector:
+    def __init__(self, threshold: float = 0.05, samples_per_class: int = 32, seed: int = 0) -> None:
+        self.threshold = threshold
+        self.samples_per_class = samples_per_class
+        self._rng = np.random.default_rng(seed)
+        self._mmd = MMDDriftDetector(threshold=threshold)
+
+    def detect_from_embeddings(self, snapshot_before: TaskSnapshot, new_embeddings: np.ndarray) -> DriftResult:
+        if new_embeddings.size == 0 or not snapshot_before.class_ids:
+            return DriftResult(
+                shift_score=0.0,
+                shift_detected=False,
+                per_class_drift={},
+                severity="none",
+                detector_scores={"mmd_pretrain": 0.0},
+                input_shift_score=0.0,
+            )
+        reference = self._reference_samples(snapshot_before, new_embeddings.shape[1])
+        if reference.size == 0:
+            return DriftResult(
+                shift_score=0.0,
+                shift_detected=False,
+                per_class_drift={},
+                severity="none",
+                detector_scores={"mmd_pretrain": 0.0},
+                input_shift_score=0.0,
+            )
+        new_embeddings = np.asarray(new_embeddings, dtype=np.float64)
+        sample_count = min(len(reference), len(new_embeddings))
+        if sample_count <= 0:
+            score = 0.0
+        else:
+            reference = reference[:sample_count]
+            new_embeddings = new_embeddings[:sample_count]
+            score = self._mmd._mmd_rbf(reference, new_embeddings)
+        severity = _severity_from_ratio(score / max(self.threshold, 1e-12))
+        return DriftResult(
+            shift_score=float(score),
+            shift_detected=bool(score > self.threshold),
+            per_class_drift={},
+            severity=severity,
+            detector_scores={"mmd_pretrain": float(score)},
+            input_shift_score=float(score),
+        )
+
+    def _reference_samples(self, snapshot_before: TaskSnapshot, embedding_dim: int) -> np.ndarray:
+        samples: list[np.ndarray] = []
+        for class_id in snapshot_before.class_ids:
+            mean = np.asarray(snapshot_before.class_means.get(class_id), dtype=np.float64)
+            cov = np.asarray(snapshot_before.class_covs.get(class_id), dtype=np.float64)
+            if mean.size == 0 or cov.size == 0:
+                continue
+            cov = np.clip(cov, 1e-6, None)
+            draws = self._rng.normal(
+                loc=mean,
+                scale=np.sqrt(cov),
+                size=(self.samples_per_class, embedding_dim),
+            )
+            samples.append(draws)
+        if not samples:
+            return np.empty((0, embedding_dim), dtype=np.float64)
+        return np.concatenate(samples, axis=0)
+
+
 class CUSUMDriftDetector(DriftDetector):
     def __init__(self, threshold: float = 0.5, slack: float = 0.05) -> None:
         self.threshold = threshold

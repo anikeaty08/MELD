@@ -51,8 +51,8 @@ def test_kliep_weighter_returns_bounded_weights():
 
     assert set(grouped) == {1, 2}
     assert torch.all(weights > 0)
-    assert float(weights.min().item()) >= 0.25 - 1e-6
-    assert float(weights.max().item()) <= 4.0 + 1e-6
+    assert float(weights.min().item()) >= 0.05 - 1e-6
+    assert float(weights.max().item()) <= 20.0 + 1e-6
     assert 0.8 <= float(weights.mean().item()) <= 1.2
 
 

@@ -19,7 +19,7 @@ class KLIEPWeighter:
     distribution is fit from current-task embeddings only.
     """
 
-    def __init__(self, clip_min: float = 0.25, clip_max: float = 4.0, eps: float = 1e-6) -> None:
+    def __init__(self, clip_min: float = 0.05, clip_max: float = 20.0, eps: float = 1e-6) -> None:
         self.clip_min = clip_min
         self.clip_max = clip_max
         self.eps = eps

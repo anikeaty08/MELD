@@ -20,7 +20,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset, TensorDataset
 
 from ..core.auto_config import derive_train_config
 from ..core.corrector import AnalyticNormCorrector
-from ..core.drift import CompositeDriftDetector
+from ..core.drift import CompositeDriftDetector, PretrainingMMDDriftDetector
 from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
@@ -107,6 +107,7 @@ class BenchmarkRunner:
         self.full_retrain_updater = FullRetrainUpdater()
         self.corrector = corrector or AnalyticNormCorrector()
         self.drift_detector = drift_detector or CompositeDriftDetector(config.shift_threshold)
+        self.pretrain_shift_detector = PretrainingMMDDriftDetector()
         self.deploy_policy = deploy_policy or FourStateDeployPolicy()
         if config.prefer_cuda and torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -186,6 +187,7 @@ class BenchmarkRunner:
                     )
                 else:
                     task_train_config = self.config.train
+                pretrain_shift = self._pretraining_shift(snapshot_before, model, task_loader)
                 if self._uses_frozen_analytic(task_id):
                     pre_risk_estimate = OracleEstimate(
                         value=0.0,
@@ -202,6 +204,7 @@ class BenchmarkRunner:
                     )
             else:
                 task_train_config = self._base_train_config()
+                pretrain_shift = None
 
             if task_id > 0 and pre_risk_estimate.value > self.config.bound_tolerance:
                 delta_artifacts = TrainArtifacts(
@@ -338,6 +341,7 @@ class BenchmarkRunner:
                     task_id,
                     delta_metrics,
                     full_metrics,
+                    snapshot_before,
                     snapshot_after,
                     pre_risk_estimate,
                     post_drift_realized,
@@ -346,6 +350,7 @@ class BenchmarkRunner:
                     delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
                     cil_metrics=cil_metrics,
                     train_artifacts=delta_artifacts,
+                    pretrain_shift=pretrain_shift,
                 )
                 results["tasks"].append(task_result)
                 results["bounds_timeline"].append(
@@ -434,6 +439,7 @@ class BenchmarkRunner:
                 task_id,
                 delta_metrics,
                 full_metrics,
+                snapshot_before,
                 snapshot_after,
                 pre_risk_estimate,
                 post_drift_realized,
@@ -442,6 +448,7 @@ class BenchmarkRunner:
                 delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
                 cil_metrics=cil_metrics,
                 train_artifacts=delta_artifacts,
+                pretrain_shift=pretrain_shift,
             )
             results["tasks"].append(task_result)
             results["bounds_timeline"].append(
@@ -776,6 +783,24 @@ class BenchmarkRunner:
             head.weight.data[offset].copy_(prototype)
             head.bias.data[offset].zero_()
 
+    def _collect_loader_embeddings(self, model: MELDModel, loader: DataLoader, max_samples: int = 512) -> np.ndarray:
+        model.eval()
+        chunks: list[np.ndarray] = []
+        collected = 0
+        with torch.no_grad():
+            for inputs, _targets in loader:
+                inputs = inputs.to(self.device, non_blocking=self._pin_memory)
+                embeddings = model.embed(inputs).detach().cpu().numpy()
+                if collected + len(embeddings) > max_samples:
+                    embeddings = embeddings[: max_samples - collected]
+                chunks.append(embeddings)
+                collected += len(embeddings)
+                if collected >= max_samples:
+                    break
+        if not chunks:
+            return np.empty((0, int(model.out_dim)), dtype=np.float32)
+        return np.concatenate(chunks, axis=0)
+
     def _pre_risk_estimate(self, snapshot: TaskSnapshot, train_config: Any) -> OracleEstimate:
         if hasattr(self.safety_oracle, "pre_risk_estimate"):
             return self.safety_oracle.pre_risk_estimate(snapshot, train_config)
@@ -839,11 +864,21 @@ class BenchmarkRunner:
             return self.analytic_updater
         return self.updater
 
+    def _pretraining_shift(
+        self,
+        snapshot_before: TaskSnapshot,
+        model: MELDModel,
+        task_loader: DataLoader,
+    ) -> DriftResult:
+        embeddings = self._collect_loader_embeddings(model, task_loader)
+        return self.pretrain_shift_detector.detect_from_embeddings(snapshot_before, embeddings)
+
     def _task_result(
         self,
         task_id: int,
         delta_metrics: dict[str, Any] | None,
         full_metrics: dict[str, Any],
+        snapshot_before: TaskSnapshot | None,
         snapshot: TaskSnapshot | None,
         pre_risk_estimate: OracleEstimate,
         post_drift_realized: OracleEstimate,
@@ -852,6 +887,7 @@ class BenchmarkRunner:
         delta_wall_time_seconds: float,
         cil_metrics: dict[str, Any] | None = None,
         train_artifacts: TrainArtifacts | None = None,
+        pretrain_shift: DriftResult | None = None,
     ) -> dict[str, Any]:
         if (
             task_id > 0
@@ -866,6 +902,15 @@ class BenchmarkRunner:
             pac_style = self.safety_oracle.pac_style_gap(snapshot)
         else:
             pac_style = None
+        if (
+            task_id > 0
+            and snapshot_before is not None
+            and snapshot is not None
+            and hasattr(self.safety_oracle, "pac_equivalence_bound")
+        ):
+            pac_equivalence = self.safety_oracle.pac_equivalence_bound(snapshot_before, snapshot)
+        else:
+            pac_equivalence = None
         fc = np.asarray(full_metrics["confusion_matrix"])
         if delta_metrics is not None:
             dc = np.asarray(delta_metrics["confusion_matrix"])
@@ -934,6 +979,17 @@ class BenchmarkRunner:
                     if pac_style is not None
                     else None
                 ),
+                "pac_equivalence_bound": (
+                    {
+                        "value": pac_equivalence.value,
+                        "delta": pac_equivalence.delta,
+                        "bound_type": pac_equivalence.bound_type,
+                        "calibrated": pac_equivalence.calibrated,
+                        "bound_is_formal": pac_equivalence.bound_is_formal,
+                    }
+                    if pac_equivalence is not None
+                    else None
+                ),
             },
             "drift": {
                 "shift_score": drift_result.shift_score,
@@ -942,6 +998,9 @@ class BenchmarkRunner:
                 "per_class_drift": drift_result.per_class_drift,
                 "detector_scores": drift_result.detector_scores,
                 "input_shift_score": drift_result.input_shift_score,
+                "pretrain_mmd_score": pretrain_shift.shift_score if pretrain_shift is not None else None,
+                "pretrain_mmd_detected": pretrain_shift.shift_detected if pretrain_shift is not None else None,
+                "pretrain_mmd_severity": pretrain_shift.severity if pretrain_shift is not None else None,
             },
             "decision": asdict(decision),
             "equivalence_gap": equivalence_gap,

@@ -98,6 +98,33 @@ class SpectralSafetyOracle(SafetyOracle):
             delta=clipped_delta,
         )
 
+    def pac_equivalence_bound(
+        self,
+        snapshot_before: TaskSnapshot,
+        snapshot_after: TaskSnapshot | None = None,
+        delta: float = 0.05,
+    ) -> OracleEstimate:
+        clipped_delta = float(np.clip(delta, 1e-12, 1.0 - 1e-12))
+        n = max(1, int(snapshot_before.dataset_size))
+        weights = self._importance_weights(snapshot_before)
+        weight_var = float(np.var(weights)) if weights.size else 0.0
+        iw_term = math.sqrt(max(weight_var, 0.0) / n)
+        curvature_term = 0.0
+        if snapshot_after is not None:
+            curvature_term = snapshot_before.fisher_eigenvalue_max * self._parameter_shift_norm(
+                snapshot_before,
+                snapshot_after,
+            )
+        pac_term = math.sqrt(math.log(1.0 / clipped_delta) / (2.0 * n))
+        value = float(iw_term + curvature_term + pac_term)
+        return OracleEstimate(
+            value=value,
+            bound_type="pac_importance_weighted",
+            calibrated=False,
+            bound_is_formal=True,
+            delta=clipped_delta,
+        )
+
     def pac_equivalence_gap(self, snapshot: TaskSnapshot | None = None, confidence: float = 0.95) -> tuple[float, float]:
         if snapshot is None:
             if self._last_pre_risk_estimate is None:
@@ -111,3 +138,26 @@ class SpectralSafetyOracle(SafetyOracle):
 
     def post_bound(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> float:
         return self.post_drift_realized(snapshot_before, snapshot_after).value
+
+    @staticmethod
+    def _importance_weights(snapshot: TaskSnapshot) -> np.ndarray:
+        if not snapshot.importance_weights:
+            return np.array([], dtype=np.float32)
+        arrays = [
+            np.asarray(values, dtype=np.float32).reshape(-1)
+            for values in snapshot.importance_weights.values()
+            if np.asarray(values).size > 0
+        ]
+        if not arrays:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(arrays, axis=0)
+
+    @staticmethod
+    def _parameter_shift_norm(snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> float:
+        if not snapshot_before.parameter_reference or not snapshot_after.parameter_reference:
+            return 0.0
+        total = 0.0
+        for before, after in zip(snapshot_before.parameter_reference, snapshot_after.parameter_reference):
+            delta = np.asarray(after, dtype=np.float64) - np.asarray(before, dtype=np.float64)
+            total += float(np.sum(delta * delta))
+        return float(math.sqrt(total))
