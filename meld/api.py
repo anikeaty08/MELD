@@ -58,7 +58,7 @@ class MELDConfig:
     shift_threshold: float = 0.3
     data_root: Path = Path("./data")
     seed: int = 7
-    full_retrain_interval: int = 1
+    full_retrain_interval: int = 3
     train: TrainConfig = field(default_factory=TrainConfig)
 
 

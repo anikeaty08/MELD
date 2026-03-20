@@ -21,6 +21,10 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         self.anchors_per_class = anchors_per_class
         self._ema_fisher: np.ndarray | None = None
         self._ema_decay: float = 0.9
+        # EMA factors for K-FAC style curvature approximation on a small set of
+        # parameters (last 2 linear layers).
+        self._ema_kfac_A: dict[str, np.ndarray] = {}
+        self._ema_kfac_G: dict[str, np.ndarray] = {}
 
     def capture(self, model: nn.Module, dataloader: DataLoader, class_ids: list[int], task_id: int) -> TaskSnapshot:
         device = next(model.parameters()).device
@@ -35,10 +39,12 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                 logits_tensor = model.classifier(embeddings_tensor)
                 embeddings = embeddings_tensor.detach().cpu().numpy()
                 logits = logits_tensor.detach().cpu().numpy()
-                for embedding, logit, target in zip(embeddings, logits, targets.tolist()):
-                    if int(target) in class_ids:
-                        class_embeddings[int(target)].append(embedding)
-                        class_logits[int(target)].append(logit)
+                targets_list = targets.tolist()
+                for i, target in enumerate(targets_list):
+                    tid = int(target)
+                    if tid in class_ids:
+                        class_embeddings[tid].append(embeddings[i])
+                        class_logits[tid].append(logits[i])
                         total_samples += 1
 
         class_means: dict[int, np.ndarray] = {}
@@ -59,12 +65,29 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                 class_anchors[class_id] = vectors[:0]
                 class_anchor_logits[class_id] = logits[:0]
 
-        fisher_diagonal, mean_gradient_norm = self._compute_fisher(model, dataloader, self.fisher_samples)
+        fisher_samples = self.fisher_samples
+        try:
+            fisher_samples = min(fisher_samples, int(len(dataloader.dataset)))
+        except Exception:
+            pass
+
+        (
+            fisher_diagonal,
+            mean_gradient_norm,
+            kfac_weight_param_names,
+            kfac_factors_A,
+            kfac_factors_G,
+            kfac_eig_max,
+        ) = self._compute_fisher(model, dataloader, fisher_samples)
         if self._ema_fisher is not None and self._ema_fisher.shape == fisher_diagonal.shape:
             fisher_diagonal = self._ema_decay * self._ema_fisher + (1.0 - self._ema_decay) * fisher_diagonal
         self._ema_fisher = fisher_diagonal.copy()
-        parameter_reference = [param.detach().cpu().numpy().copy() for param in model.parameters()]
+        parameter_reference = [
+            param.detach().cpu().numpy().copy() for param in model.parameters() if param.requires_grad
+        ]
         steps_per_epoch = max(1, math.ceil(max(1, len(dataloader.dataset)) / max(1, dataloader.batch_size or 1)))
+        diag_eig_max = float(np.max(fisher_diagonal)) if fisher_diagonal.size else 0.0
+        fisher_eigenvalue_max = max(diag_eig_max, float(kfac_eig_max))
 
         return TaskSnapshot(
             task_id=task_id,
@@ -75,16 +98,31 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             class_anchor_logits=class_anchor_logits,
             classifier_norms=model.classifier.all_norms(),
             fisher_diagonal=fisher_diagonal,
-            fisher_eigenvalue_max=float(np.max(fisher_diagonal)) if fisher_diagonal.size else 0.0,
+            fisher_eigenvalue_max=fisher_eigenvalue_max,
             mean_gradient_norm=mean_gradient_norm,
             timestamp=time.time(),
             embedding_dim=int(next(iter(class_means.values())).shape[0]) if class_means else int(model.out_dim),
             dataset_size=len(dataloader.dataset),
             steps_per_epoch=steps_per_epoch,
             parameter_reference=parameter_reference,
+            kfac_weight_param_names=kfac_weight_param_names,
+            kfac_factors_A=kfac_factors_A,
+            kfac_factors_G=kfac_factors_G,
         )
 
-    def _compute_fisher(self, model: nn.Module, dataloader: DataLoader, fisher_samples: int) -> tuple[np.ndarray, float]:
+    def _compute_fisher(
+        self,
+        model: nn.Module,
+        dataloader: DataLoader,
+        fisher_samples: int,
+    ) -> tuple[
+        np.ndarray,
+        float,
+        list[str],
+        dict[str, np.ndarray],
+        dict[str, np.ndarray],
+        float,
+    ]:
         device = next(model.parameters()).device
         params = [param for param in model.parameters() if param.requires_grad]
         fisher = [torch.zeros_like(param, device=device) for param in params]
@@ -92,27 +130,125 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         total = 0
         criterion = nn.CrossEntropyLoss()
 
-        for inputs, targets in dataloader:
-            if total >= fisher_samples:
-                break
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            remaining = fisher_samples - total
-            if inputs.size(0) > remaining:
-                inputs = inputs[:remaining]
-                targets = targets[:remaining]
-            model.zero_grad(set_to_none=True)
-            logits = model(inputs)
-            loss = criterion(logits, targets)
-            grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
-            grad_norm = torch.sqrt(torch.stack([grad.detach().pow(2).sum() for grad in grads]).sum())
-            grad_norms.append(float(grad_norm.item()))
-            batch_size = inputs.size(0)
-            for index, grad in enumerate(grads):
-                fisher[index] += grad.detach().pow(2) * batch_size
-            total += batch_size
+        # K-FAC factors for the last 2 Linear layers (by module order).
+        linear_modules = [m for m in model.modules() if isinstance(m, nn.Linear)]
+        kfac_modules = linear_modules[-2:] if len(linear_modules) >= 2 else linear_modules
+        name_by_param = {p: n for n, p in model.named_parameters()}
+
+        kfac_weight_param_names: list[str] = []
+        for m in kfac_modules:
+            pname = name_by_param.get(m.weight)
+            if pname is not None:
+                kfac_weight_param_names.append(pname)
+
+        activations: dict[str, Tensor] = {}
+        grad_outputs: dict[str, Tensor] = {}
+        A_acc: dict[str, Tensor] = {}
+        G_acc: dict[str, Tensor] = {}
+        handles = []
+
+        for m in kfac_modules:
+            pname = name_by_param.get(m.weight)
+            if pname is None:
+                continue
+            in_dim = int(m.in_features)
+            out_dim = int(m.out_features)
+            A_acc[pname] = torch.zeros((in_dim, in_dim), device=device)
+            G_acc[pname] = torch.zeros((out_dim, out_dim), device=device)
+
+            def _make_fwd_hook(pn: str):
+                def _hook(mod: nn.Module, inp: tuple[Tensor, ...], out: Tensor) -> None:
+                    activations[pn] = inp[0].detach()
+                return _hook
+
+            def _make_bwd_hook(pn: str):
+                def _hook(mod: nn.Module, grad_in: tuple[Tensor, ...], grad_out: tuple[Tensor, ...]) -> None:
+                    grad_outputs[pn] = grad_out[0].detach()
+                return _hook
+
+            handles.append(m.register_forward_hook(_make_fwd_hook(pname)))
+            handles.append(m.register_full_backward_hook(_make_bwd_hook(pname)))
+
+        try:
+            for inputs, targets in dataloader:
+                if total >= fisher_samples:
+                    break
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                remaining = fisher_samples - total
+                if inputs.size(0) > remaining:
+                    inputs = inputs[:remaining]
+                    targets = targets[:remaining]
+
+                model.zero_grad(set_to_none=True)
+                logits = model(inputs)
+                loss = criterion(logits, targets)
+                loss.backward()
+
+                batch_size = inputs.size(0)
+                for index, param in enumerate(params):
+                    if param.grad is None:
+                        continue
+                    fisher[index] += param.grad.detach().pow(2) * batch_size
+
+                # Mean grad norm proxy (used for oracle calibration).
+                per_param_norms = [param.grad.detach().pow(2).sum() for param in params if param.grad is not None]
+                if per_param_norms:
+                    grad_norm = torch.sqrt(torch.stack(per_param_norms).sum())
+                    grad_norms.append(float(grad_norm.item()))
+
+                # K-FAC accumulation from hooked activations/gradients.
+                if kfac_weight_param_names:
+                    for pname in kfac_weight_param_names:
+                        a = activations.get(pname)
+                        g = grad_outputs.get(pname)
+                        if a is None or g is None:
+                            continue
+                        A_acc[pname] += a.t() @ a
+                        G_acc[pname] += g.t() @ g
+
+                total += batch_size
+        finally:
+            for h in handles:
+                h.remove()
 
         if total == 0:
-            return np.array([], dtype=np.float32), 0.0
+            return np.array([], dtype=np.float32), 0.0, [], {}, {}, 0.0
+
         flat = torch.cat([(entry / total).reshape(-1) for entry in fisher])
-        return flat.detach().cpu().numpy(), float(np.mean(grad_norms)) if grad_norms else 0.0
+        fisher_np = flat.detach().cpu().numpy()
+        mean_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+
+        kfac_A_np: dict[str, np.ndarray] = {}
+        kfac_G_np: dict[str, np.ndarray] = {}
+        kfac_eig_max = 0.0
+
+        for pname in kfac_weight_param_names:
+            A = (A_acc[pname] / total).detach()
+            G = (G_acc[pname] / total).detach()
+
+            # Optional EMA smoothing for K-FAC factors.
+            old_A = self._ema_kfac_A.get(pname)
+            old_G = self._ema_kfac_G.get(pname)
+            if old_A is not None and old_A.shape == tuple(A.shape):
+                A = self._ema_decay * torch.from_numpy(old_A).to(device) + (1.0 - self._ema_decay) * A
+            if old_G is not None and old_G.shape == tuple(G.shape):
+                G = self._ema_decay * torch.from_numpy(old_G).to(device) + (1.0 - self._ema_decay) * G
+
+            A_np = A.detach().cpu().numpy().astype(np.float32, copy=False)
+            G_np = G.detach().cpu().numpy().astype(np.float32, copy=False)
+            self._ema_kfac_A[pname] = A_np.copy()
+            self._ema_kfac_G[pname] = G_np.copy()
+
+            # Upper-bound-ish spectral proxy: maxeig(A) * maxeig(G).
+            eigA = np.linalg.eigvalsh(A_np)
+            eigG = np.linalg.eigvalsh(G_np)
+            eigA = np.clip(eigA, 0.0, None)
+            eigG = np.clip(eigG, 0.0, None)
+            est = float(np.max(eigA) * np.max(eigG))
+            kfac_eig_max = max(kfac_eig_max, est)
+
+            kfac_A_np[pname] = A_np
+            kfac_G_np[pname] = G_np
+
+        return fisher_np, mean_grad_norm, kfac_weight_param_names, kfac_A_np, kfac_G_np, kfac_eig_max

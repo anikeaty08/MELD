@@ -17,7 +17,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--backbone", default="resnet32")
-    parser.add_argument("--bound-tolerance", type=float, default=0.01)
+    # Keep CLI default aligned with MELDConfig default (too-small values skip delta
+    # training almost immediately and make comparisons misleading).
+    parser.add_argument("--bound-tolerance", type=float, default=10.0)
     parser.add_argument("--shift-threshold", type=float, default=0.3)
     parser.add_argument("--lambda-geometry", type=float, default=1.0)
     parser.add_argument("--lambda-ewc", type=float, default=0.4)

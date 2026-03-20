@@ -6,6 +6,7 @@ import json
 import os
 import random
 import time
+import functools
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,12 +22,18 @@ from ..core.drift import KLManifoldDriftDetector
 from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
-from ..core.updater import GeometryConstrainedUpdater
+from ..core.updater import FullRetrainUpdater, GeometryConstrainedUpdater
 from ..interfaces.base import Decision, DriftResult, TaskSnapshot, TrainArtifacts
 from ..modeling import MELDModel
 from ..models.backbone import resnet20, resnet32, resnet44, resnet56
 from ..models.classifier import IncrementalClassifier
-from .metrics import compute_classification_metrics, compute_compute_savings, compute_equivalence_gap
+from .metrics import (
+    compute_classification_metrics,
+    compute_compute_savings,
+    compute_equivalence_gap,
+    compute_ece_maybe,
+)
+from .robustness import evaluate_cifar_c
 
 if TYPE_CHECKING:
     from ..api import MELDConfig
@@ -43,6 +50,22 @@ _CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 _CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 _CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
 _CIFAR100_STD = (0.2675, 0.2565, 0.2761)
+
+
+def _seed_worker(worker_id: int, base_seed: int) -> None:
+    """DataLoader worker seeding for Python/numpy/torch RNGs.
+
+    Implemented at module scope so it is picklable on Windows (spawn).
+    """
+
+    import random as _random
+
+    import numpy as _np
+
+    worker_seed = int(base_seed) + int(worker_id)
+    _random.seed(worker_seed)
+    _np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 def _auto_backbone(dataset: str) -> str:
@@ -67,6 +90,7 @@ class BenchmarkRunner:
         self.snapshot_strategy = snapshot_strategy or FisherManifoldSnapshot()
         self.safety_oracle = safety_oracle or SpectralSafetyOracle()
         self.updater = updater or GeometryConstrainedUpdater()
+        self.full_retrain_updater = FullRetrainUpdater()
         self.corrector = corrector or AnalyticNormCorrector()
         self.drift_detector = drift_detector or KLManifoldDriftDetector(config.shift_threshold)
         self.deploy_policy = deploy_policy or FourStateDeployPolicy()
@@ -79,9 +103,17 @@ class BenchmarkRunner:
         self._baseline_model_cache: MELDModel | None = None
 
     def run(self, results_path: str | Path | None = None) -> dict[str, Any]:
+        self._seed_everything(int(self.config.seed))
         tasks, eval_loaders = self._build_tasks()
         model = self._build_model()
         all_seen_loaders: list[DataLoader] = []
+        last_drift_score: float | None = None
+        num_tasks_run = len(tasks)
+        # CIL tracking for MELD delta model:
+        # - acc_after_task[t] : top1 after training task t
+        # - best_acc[t]       : best top1 on task t over time
+        delta_acc_after_task: list[float] = [0.0 for _ in range(num_tasks_run)]
+        delta_best_acc: list[float] = [0.0 for _ in range(num_tasks_run)]
         results: dict[str, Any] = {
             "status": "running",
             "config": self._config_dict(),
@@ -93,18 +125,29 @@ class BenchmarkRunner:
         for task_id, task_loader in enumerate(tasks):
             all_seen_loaders.append(task_loader)
             new_class_ids = model.classifier.adaption(self.config.classes_per_task)
+            forward_transfer_top1: float | None = None
+            if task_id > 0:
+                # Zero-shot forward transfer: evaluate before any delta training.
+                ft_metrics = self._evaluate(model, [eval_loaders[task_id]])
+                forward_transfer_top1 = float(ft_metrics["top1"])
 
             snapshot_before = None
             pre_bound = 0.0
             if task_id > 0:
+                # Adaptive Fisher EMA decay: larger observed drift -> faster
+                # decay (smaller EMA factor) for the next snapshot.
+                base_decay = float(getattr(self.config.train, "fisher_ema_decay", 0.9))
+                if last_drift_score is None:
+                    decay = base_decay
+                else:
+                    ratio = float(last_drift_score) / max(1e-6, float(self.config.shift_threshold))
+                    decay = base_decay / (1.0 + ratio)
+                self.snapshot_strategy._ema_decay = float(np.clip(decay, 0.05, 0.95))
                 snapshot_before = self.snapshot_strategy.capture(
                     model,
                     self._merged_loader(all_seen_loaders[:-1], shuffle=False),
                     list(range(model.classifier.num_classes - self.config.classes_per_task)),
                     task_id - 1,
-                )
-                self.snapshot_strategy._ema_decay = float(
-                    getattr(self.config.train, "fisher_ema_decay", 0.9)
                 )
                 if getattr(self.config.train, "auto_derive_hparams", False):
                     task_train_config = derive_train_config(
@@ -123,6 +166,7 @@ class BenchmarkRunner:
                 snapshot_after = snapshot_before
                 post_bound = pre_bound
                 drift_result = DriftResult(0.0, False, {}, "none")
+                delta_metrics = None
                 decision = Decision(
                     state="BOUND_EXCEEDED",
                     pre_bound=pre_bound,
@@ -166,14 +210,67 @@ class BenchmarkRunner:
                         full_retrain_wall_time_seconds=0.0,
                     ),
                 )
-                full_metrics, full_time = self._run_full_retrain_baseline(
-                    all_seen_loaders, eval_loaders[: task_id + 1]
+                old_class_ids = list(range(0, task_id * self.config.classes_per_task))
+                new_class_ids = list(
+                    range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)
                 )
-                delta_metrics = self._evaluate(model, eval_loaders[: task_id + 1])
+                full_metrics, full_time = self._run_full_retrain_baseline(
+                    all_seen_loaders,
+                    eval_loaders[: task_id + 1],
+                    old_class_ids=old_class_ids,
+                    new_class_ids=new_class_ids,
+                )
+                delta_metrics = self._evaluate(
+                    model,
+                    eval_loaders[: task_id + 1],
+                    old_class_ids=old_class_ids,
+                    new_class_ids=new_class_ids,
+                )
                 decision.compute_savings_percent = compute_compute_savings(
                     delta_artifacts.wall_time_seconds, full_time
                 )
                 delta_metrics["wall_time_seconds"] = delta_artifacts.wall_time_seconds
+
+                # Phase 4 CIL metrics: per-task forgetting/backward transfer
+                # for the MELD delta model.
+                per_task_top1: list[float] = []
+                for k in range(task_id + 1):
+                    m_k = self._evaluate(model, [eval_loaders[k]])
+                    per_task_top1.append(float(m_k["top1"]))
+                if task_id == 0:
+                    delta_acc_after_task[0] = per_task_top1[0]
+                    delta_best_acc[0] = per_task_top1[0]
+                    forgetting_per_task: dict[int, float] = {}
+                    backward_transfer_per_task: dict[int, float] = {}
+                else:
+                    forgetting_per_task = {}
+                    backward_transfer_per_task = {}
+                    for k in range(task_id):
+                        delta_best_acc[k] = max(delta_best_acc[k], per_task_top1[k])
+                        forgetting_per_task[k] = float(delta_best_acc[k] - per_task_top1[k])
+                        backward_transfer_per_task[k] = float(
+                            per_task_top1[k] - delta_acc_after_task[k]
+                        )
+                    delta_acc_after_task[task_id] = per_task_top1[task_id]
+                    delta_best_acc[task_id] = per_task_top1[task_id]
+
+                cil_metrics = {
+                    "forward_transfer_top1": forward_transfer_top1,
+                    "forgetting_per_task": forgetting_per_task,
+                    "backward_transfer_per_task": backward_transfer_per_task,
+                }
+                if forgetting_per_task:
+                    cil_metrics["mean_forgetting"] = float(
+                        np.mean(list(forgetting_per_task.values()))
+                    )
+                else:
+                    cil_metrics["mean_forgetting"] = None
+                if backward_transfer_per_task:
+                    cil_metrics["mean_backward_transfer"] = float(
+                        np.mean(list(backward_transfer_per_task.values()))
+                    )
+                else:
+                    cil_metrics["mean_backward_transfer"] = None
                 task_result = self._task_result(
                     task_id,
                     delta_metrics,
@@ -183,19 +280,68 @@ class BenchmarkRunner:
                     post_bound,
                     drift_result,
                     decision,
+                    delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
+                    cil_metrics=cil_metrics,
                 )
                 results["tasks"].append(task_result)
                 self._write_results(results_path, results)
+                last_drift_score = float(drift_result.shift_score)
                 continue
 
-            full_metrics, full_time = self._run_full_retrain_baseline(
-                all_seen_loaders, eval_loaders[: task_id + 1]
+            old_class_ids = list(range(0, task_id * self.config.classes_per_task))
+            new_class_ids = list(
+                range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)
             )
-            delta_metrics = self._evaluate(model, eval_loaders[: task_id + 1])
-            delta_metrics["wall_time_seconds"] = delta_artifacts.wall_time_seconds
+            full_metrics, full_time = self._run_full_retrain_baseline(
+                all_seen_loaders,
+                eval_loaders[: task_id + 1],
+                old_class_ids=old_class_ids,
+                new_class_ids=new_class_ids,
+            )
             decision.compute_savings_percent = compute_compute_savings(
                 delta_artifacts.wall_time_seconds, full_time
             )
+
+            # Phase 4 CIL metrics for the MELD delta model (even when
+            # training was skipped).
+            per_task_top1: list[float] = []
+            for k in range(task_id + 1):
+                m_k = self._evaluate(model, [eval_loaders[k]])
+                per_task_top1.append(float(m_k["top1"]))
+            if task_id == 0:
+                delta_acc_after_task[0] = per_task_top1[0]
+                delta_best_acc[0] = per_task_top1[0]
+                forgetting_per_task = {}
+                backward_transfer_per_task = {}
+            else:
+                forgetting_per_task = {}
+                backward_transfer_per_task = {}
+                for k in range(task_id):
+                    delta_best_acc[k] = max(delta_best_acc[k], per_task_top1[k])
+                    forgetting_per_task[k] = float(delta_best_acc[k] - per_task_top1[k])
+                    backward_transfer_per_task[k] = float(
+                        per_task_top1[k] - delta_acc_after_task[k]
+                    )
+                delta_acc_after_task[task_id] = per_task_top1[task_id]
+                delta_best_acc[task_id] = per_task_top1[task_id]
+
+            cil_metrics = {
+                "forward_transfer_top1": forward_transfer_top1,
+                "forgetting_per_task": forgetting_per_task,
+                "backward_transfer_per_task": backward_transfer_per_task,
+            }
+            if forgetting_per_task:
+                cil_metrics["mean_forgetting"] = float(
+                    np.mean(list(forgetting_per_task.values()))
+                )
+            else:
+                cil_metrics["mean_forgetting"] = None
+            if backward_transfer_per_task:
+                cil_metrics["mean_backward_transfer"] = float(
+                    np.mean(list(backward_transfer_per_task.values()))
+                )
+            else:
+                cil_metrics["mean_backward_transfer"] = None
             task_result = self._task_result(
                 task_id,
                 delta_metrics,
@@ -205,12 +351,25 @@ class BenchmarkRunner:
                 post_bound,
                 drift_result,
                 decision,
+                delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
+                cil_metrics=cil_metrics,
             )
             results["tasks"].append(task_result)
             self._write_results(results_path, results)
+            last_drift_score = float(drift_result.shift_score)
 
         results["status"] = "completed"
         results["final_summary"] = self._summarize(results["tasks"])
+        try:
+            results["robustness"] = evaluate_cifar_c(
+                model,
+                dataset=self.config.dataset,
+                data_root=self.config.data_root,
+                device=self.device,
+                batch_size=self.config.train.batch_size,
+            )
+        except Exception as exc:
+            results["robustness"] = {"status": "skipped", "reason": f"Robustness eval failed: {exc}"}
         self._write_results(results_path, results)
         return results
 
@@ -241,6 +400,14 @@ class BenchmarkRunner:
     def _build_tasks(self) -> tuple[list[DataLoader], list[DataLoader]]:
         bundle = self._load_dataset_bundle()
         train_tasks, eval_tasks = [], []
+        generator = torch.Generator()
+        generator.manual_seed(int(self.config.seed))
+        worker_init = (
+            functools.partial(_seed_worker, base_seed=int(self.config.seed))
+            if self.config.train.num_workers > 0
+            else None
+        )
+
         for train_ds, test_ds in bundle:
             train_tasks.append(
                 DataLoader(
@@ -248,6 +415,8 @@ class BenchmarkRunner:
                     batch_size=self.config.train.batch_size,
                     shuffle=True,
                     num_workers=self.config.train.num_workers,
+                    generator=generator,
+                    worker_init_fn=worker_init,
                 )
             )
             eval_tasks.append(
@@ -256,6 +425,8 @@ class BenchmarkRunner:
                     batch_size=self.config.train.batch_size,
                     shuffle=False,
                     num_workers=self.config.train.num_workers,
+                    generator=generator,
+                    worker_init_fn=worker_init,
                 )
             )
         return train_tasks, eval_tasks
@@ -285,10 +456,14 @@ class BenchmarkRunner:
             te = CIFAR100(data_path=str(self.config.data_root), train=False, download=True)
             mean, std = _CIFAR100_MEAN, _CIFAR100_STD
         else:
-            raise ValueError(
+            import warnings
+
+            warnings.warn(
                 f"Unsupported dataset '{self.config.dataset}'. "
-                "Supported: CIFAR-10, CIFAR-100."
+                "Falling back to synthetic data.",
+                stacklevel=2,
             )
+            return self._synthetic_bundle()
 
         s_tr = ClassIncremental(tr, increment=self.config.classes_per_task, transformations=None)
         s_te = ClassIncremental(te, increment=self.config.classes_per_task, transformations=None)
@@ -327,6 +502,9 @@ class BenchmarkRunner:
         self,
         train_loaders: list[DataLoader],
         eval_loaders: list[DataLoader],
+        *,
+        old_class_ids: list[int] | None = None,
+        new_class_ids: list[int] | None = None,
     ) -> tuple[dict[str, Any], float]:
         torch.manual_seed(int(self.config.seed) + len(train_loaders))
         use_cached = (
@@ -349,14 +527,26 @@ class BenchmarkRunner:
         cfg = asdict(self.config.train)
         cfg["epochs"] = baseline_epochs
         start = time.time()
-        bm, _ = self.updater.update(bm, train_loader, None, _ConfigView(cfg))
+        bm, _ = self.full_retrain_updater.update(bm, train_loader, None, _ConfigView(cfg))
         wall = time.time() - start
         self._baseline_model_cache = bm.clone()
-        metrics = self._evaluate(bm, eval_loaders)
+        metrics = self._evaluate(
+            bm,
+            eval_loaders,
+            old_class_ids=old_class_ids,
+            new_class_ids=new_class_ids,
+        )
         metrics["wall_time_seconds"] = wall
         return metrics, wall
 
-    def _evaluate(self, model: MELDModel, eval_loaders: list[DataLoader]) -> dict[str, Any]:
+    def _evaluate(
+        self,
+        model: MELDModel,
+        eval_loaders: list[DataLoader],
+        *,
+        old_class_ids: list[int] | None = None,
+        new_class_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
         model.eval()
         logits_all, targets_all = [], []
         with torch.no_grad():
@@ -364,9 +554,24 @@ class BenchmarkRunner:
                 for inp, tgt in loader:
                     logits_all.append(model(inp.to(self.device)))
                     targets_all.append(tgt.to(self.device))
-        metrics = compute_classification_metrics(
-            torch.cat(logits_all), torch.cat(targets_all)
-        )
+        all_logits = torch.cat(logits_all)
+        all_targets = torch.cat(targets_all)
+        metrics = compute_classification_metrics(all_logits, all_targets)
+
+        # Optional ECE split by "old" vs "new" class groups.
+        if old_class_ids is not None or new_class_ids is not None:
+            probs = torch.softmax(all_logits, dim=1).detach().cpu().numpy()
+            y_true = all_targets.detach().cpu().numpy()
+            if old_class_ids is not None:
+                mask_old = np.isin(y_true, np.asarray(old_class_ids))
+                metrics["ece_old"] = compute_ece_maybe(probs[mask_old], y_true[mask_old])
+            else:
+                metrics["ece_old"] = None
+            if new_class_ids is not None:
+                mask_new = np.isin(y_true, np.asarray(new_class_ids))
+                metrics["ece_new"] = compute_ece_maybe(probs[mask_new], y_true[mask_new])
+            else:
+                metrics["ece_new"] = None
         metrics["wall_time_seconds"] = 0.0
         return metrics
 
@@ -382,41 +587,79 @@ class BenchmarkRunner:
     def _task_result(
         self,
         task_id: int,
-        delta_metrics: dict[str, Any],
+        delta_metrics: dict[str, Any] | None,
         full_metrics: dict[str, Any],
         snapshot: TaskSnapshot | None,
         pre_bound: float,
         post_bound: float,
         drift_result: DriftResult,
         decision: Decision,
+        delta_wall_time_seconds: float,
+        cil_metrics: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        dc = np.asarray(delta_metrics["confusion_matrix"])
         fc = np.asarray(full_metrics["confusion_matrix"])
+        if delta_metrics is not None:
+            dc = np.asarray(delta_metrics["confusion_matrix"])
+            equivalence_gap = compute_equivalence_gap(dc, fc)
+            forgetting = max(0.0, full_metrics["top1"] - delta_metrics["top1"])
+            delta_payload = {
+                "top1": delta_metrics["top1"],
+                "top5": delta_metrics["top5"],
+                "ece": delta_metrics["ece"],
+                "ece_old": delta_metrics.get("ece_old"),
+                "ece_new": delta_metrics.get("ece_new"),
+                "per_class_acc": delta_metrics["per_class_accuracy"],
+                "wall_time_seconds": delta_metrics.get("wall_time_seconds", delta_wall_time_seconds),
+            }
+        else:
+            equivalence_gap = None
+            forgetting = None
+            delta_payload = {"skipped": True, "wall_time_seconds": delta_wall_time_seconds}
         return {
             "task_id": task_id,
-            "delta": {"top1": delta_metrics["top1"], "top5": delta_metrics["top5"], "ece": delta_metrics["ece"], "per_class_acc": delta_metrics["per_class_accuracy"], "wall_time_seconds": delta_metrics.get("wall_time_seconds", 0.0)},
-            "full_retrain": {"top1": full_metrics["top1"], "top5": full_metrics["top5"], "ece": full_metrics["ece"], "per_class_acc": full_metrics["per_class_accuracy"], "wall_time_seconds": full_metrics.get("wall_time_seconds", 0.0)},
+            "delta": delta_payload,
+            "full_retrain": {
+                "top1": full_metrics["top1"],
+                "top5": full_metrics["top5"],
+                "ece": full_metrics["ece"],
+                "ece_old": full_metrics.get("ece_old"),
+                "ece_new": full_metrics.get("ece_new"),
+                "per_class_acc": full_metrics["per_class_accuracy"],
+                "wall_time_seconds": full_metrics.get("wall_time_seconds", 0.0),
+            },
             "snapshot": {"fisher_eigenvalue_max": snapshot.fisher_eigenvalue_max if snapshot else 0.0, "class_ids": snapshot.class_ids if snapshot else []},
             "oracle": {"pre_bound": pre_bound, "post_bound": post_bound, "bound_held": decision.bound_held if task_id > 0 else True},
             "drift": {"shift_score": drift_result.shift_score, "shift_detected": drift_result.shift_detected, "severity": drift_result.severity, "per_class_drift": drift_result.per_class_drift},
             "decision": asdict(decision),
-            "equivalence_gap": compute_equivalence_gap(dc, fc),
-            "forgetting": max(0.0, full_metrics["top1"] - delta_metrics["top1"]),
+            "equivalence_gap": equivalence_gap,
+            "forgetting": forgetting,
             "compute_savings_percent": decision.compute_savings_percent,
+            "cil_metrics": cil_metrics,
         }
 
     def _summarize(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
         if not tasks:
             return {}
+        delta_top1s = [t["delta"].get("top1") for t in tasks if isinstance(t.get("delta"), dict) and t["delta"].get("top1") is not None]
+        eq_gaps = [t.get("equivalence_gap") for t in tasks if t.get("equivalence_gap") is not None]
         return {
-            "mean_delta_top1": float(np.mean([t["delta"]["top1"] for t in tasks])),
+            "mean_delta_top1": float(np.mean(delta_top1s)) if delta_top1s else None,
             "mean_full_retrain_top1": float(np.mean([t["full_retrain"]["top1"] for t in tasks])),
-            "mean_equivalence_gap": float(np.mean([t["equivalence_gap"] for t in tasks])),
+            "mean_equivalence_gap": float(np.mean(eq_gaps)) if eq_gaps else None,
             "mean_compute_savings": float(np.mean([t["compute_savings_percent"] for t in tasks])),
             "decisions": [t["decision"]["state"] for t in tasks],
-            "total_wall_time_delta": float(np.sum([t["delta"]["wall_time_seconds"] for t in tasks])),
+            "total_wall_time_delta": float(np.sum([float(t["delta"].get("wall_time_seconds", 0.0)) for t in tasks if isinstance(t.get("delta"), dict)])),
             "total_wall_time_full_retrain": float(np.sum([t["full_retrain"]["wall_time_seconds"] for t in tasks])),
         }
+
+    def _seed_everything(self, seed: int) -> None:
+        import random as _random
+
+        _random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     def _config_dict(self) -> dict[str, Any]:
         return {

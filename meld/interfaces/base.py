@@ -26,6 +26,11 @@ class TaskSnapshot:
     dataset_size: int
     steps_per_epoch: int
     parameter_reference: list[np.ndarray] = field(default_factory=list)
+    # Kronecker-factored curvature for a small subset of parameters (weights
+    # only). Used to replace diagonal Fisher for the selected parameters.
+    kfac_weight_param_names: list[str] = field(default_factory=list)
+    kfac_factors_A: dict[str, np.ndarray] = field(default_factory=dict)  # in_dim x in_dim
+    kfac_factors_G: dict[str, np.ndarray] = field(default_factory=dict)  # out_dim x out_dim
 
 
 @dataclass(slots=True)

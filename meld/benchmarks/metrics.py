@@ -31,6 +31,20 @@ def compute_ece(probs: np.ndarray, labels: np.ndarray, num_bins: int = 15) -> fl
     return float(ece)
 
 
+def compute_ece_maybe(
+    probs: np.ndarray,
+    labels: np.ndarray,
+    num_bins: int = 15,
+) -> float | None:
+    """Compute ECE for a subset.
+
+    Returns `None` if the subset is empty.
+    """
+    if labels.size == 0:
+        return None
+    return compute_ece(probs=probs, labels=labels, num_bins=num_bins)
+
+
 def compute_classification_metrics(logits: torch.Tensor, targets: torch.Tensor, topk: tuple[int, ...] = (1, 5)) -> dict[str, object]:
     max_k = min(max(topk), logits.size(1))
     _, pred = logits.topk(max_k, dim=1, largest=True, sorted=True)
