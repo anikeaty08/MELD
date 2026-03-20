@@ -6,6 +6,7 @@ import argparse
 import json
 
 from .api import MELDConfig, TrainConfig, run
+from .core.snapshot import FisherManifoldSnapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-geometry", type=float, default=1.0)
     parser.add_argument("--lambda-ewc", type=float, default=0.4)
     parser.add_argument("--geometry-decay", type=float, default=0.5)
+    parser.add_argument("--fisher-samples", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--prefer-cuda", action="store_true")
     parser.add_argument("--results-path", default="results.json")
@@ -52,7 +54,8 @@ def main() -> None:
             num_workers=args.num_workers,
         ),
     )
-    results = run(config, results_path=args.results_path)
+    snapshot_strategy = FisherManifoldSnapshot(fisher_samples=int(args.fisher_samples))
+    results = run(config, results_path=args.results_path, snapshot_strategy=snapshot_strategy)
     print(json.dumps(results["final_summary"], indent=2))
 
 
