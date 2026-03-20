@@ -1,9 +1,9 @@
 # MELD Theory
 
 MELD frames continual learning as a *bounded-drift control problem*. For each
-incoming task, the system predicts an upper bound on allowable representation
-drift before training (`epsilon_max`), executes a constrained update, and then
-measures realized drift (`epsilon_actual`) from replay-free statistics.
+incoming task, the system computes a pre-training risk estimate
+(`risk_estimate_pre`), executes a constrained update, and then measures
+realized drift (`drift_realized_post`) from replay-free statistics.
 
 ## 1) Replay-free snapshot state
 
@@ -17,12 +17,12 @@ For each past class `c`, MELD stores:
 
 No raw image tensors are retained or replayed.
 
-## 2) Pre-training safety bound
+## 2) Pre-training risk estimate
 
 Let `F` be the curvature proxy and `eta` the planned peak learning rate for the
 task update. The safety oracle computes:
 
-`epsilon_max = lambda_max(F) * eta * sqrt(T * d)`
+`risk_estimate_pre = lambda_max(F) * eta * sqrt(T * d)`
 
 where:
 
@@ -31,7 +31,7 @@ where:
 - `T` is effective optimization steps for the task
 - `d` is embedding dimensionality
 
-If `epsilon_max > bound_tolerance`, MELD enters `BOUND_EXCEEDED`, skips the
+If `risk_estimate_pre > bound_tolerance`, MELD enters `BOUND_EXCEEDED`, skips the
 delta update, and recommends full retraining.
 
 ## 3) Delta update objective
@@ -54,16 +54,20 @@ snapshot curvature scale.
 
 After update, MELD recomputes snapshot statistics and measures:
 
-`epsilon_actual = mean_c ||mu_c_after - mu_c_before||_2 / max(||mu_c_before||_2, eps)`
+`drift_realized_post = mean_c ||mu_c_after - mu_c_before||_2 / max(||mu_c_before||_2, eps)`
 
-The deploy policy then uses `(epsilon_max, epsilon_actual, drift_score)` to
+The deploy policy then uses `(risk_estimate_pre, drift_realized_post, drift_score)` to
 choose `SAFE_DELTA`, `CAUTIOUS_DELTA`, `BOUND_VIOLATED`, `SHIFT_CRITICAL`, or
 `BOUND_EXCEEDED`.
 
 ## 5) Operational interpretation
 
-- `epsilon_max` is a conservative *risk estimate before training*
-- `epsilon_actual` is a realized *drift audit after training*
-- The gap (`epsilon_max - epsilon_actual`) indicates bound tightness
+- `risk_estimate_pre` is an empirical *risk estimate before training*
+- `drift_realized_post` is a realized *drift audit after training*
+- The gap (`risk_estimate_pre - drift_realized_post`) indicates estimate tightness
 - A skip decision is safety-preserving: deployment can continue on the prior
   model while triggering full retrain on the background path
+
+This estimate is empirically calibrated and not a formal PAC guarantee. A
+formal guarantee would require proving that the importance-weighted delta loss
+concentrates around the full-data loss, which is left as future work.

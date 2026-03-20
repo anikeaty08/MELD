@@ -66,6 +66,15 @@ class Decision:
     recommended_action: str
 
 
+@dataclass(slots=True)
+class OracleEstimate:
+    value: float
+    bound_type: str
+    calibrated: bool
+    bound_is_formal: bool
+    delta: float | None = None
+
+
 VALID_DECISION_STATES = {
     "SAFE_DELTA",
     "CAUTIOUS_DELTA",
@@ -98,11 +107,11 @@ class SnapshotStrategy(ABC):
 class SafetyOracle(ABC):
     @abstractmethod
     def pre_bound(self, snapshot: TaskSnapshot, train_config: Any) -> float:
-        """Compute a pre-training safety bound."""
+        """Compatibility wrapper for the legacy pre-training scalar output."""
 
     @abstractmethod
     def post_bound(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> float:
-        """Compute the post-training realized drift."""
+        """Compatibility wrapper for the legacy post-training scalar output."""
 
 
 class ManifoldUpdater(ABC):

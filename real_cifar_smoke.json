@@ -1,0 +1,322 @@
+{
+  "run_id": "20260320T102022.018068Z",
+  "status": "completed",
+  "config": {
+    "dataset": "CIFAR-10",
+    "num_tasks": 2,
+    "classes_per_task": 2,
+    "bound_tolerance": 10.0,
+    "shift_threshold": 0.3,
+    "prefer_cuda": false,
+    "database_path": "meld_results.db",
+    "seed": 7,
+    "train": {
+      "backbone": "resnet32",
+      "pretrained_backbone": false,
+      "incremental_strategy": "frozen_analytic",
+      "epochs": 1,
+      "base_epochs": 1,
+      "batch_size": 128,
+      "lr": 0.1,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "freeze_bn_stats": true,
+      "lambda_geometry": 1.0,
+      "lambda_ewc": 0.4,
+      "lambda_kd": 1.0,
+      "kd_temperature": 2.0,
+      "geometry_decay": 0.5,
+      "analytic_ridge": 0.001,
+      "enable_importance_weighting": true,
+      "label_smoothing": 0.0,
+      "cutmix_alpha": 0.0,
+      "use_imprinting": true,
+      "imprinting_max_samples_per_class": 64,
+      "auto_scale_safe_update": true,
+      "min_safe_lr": 1e-05,
+      "use_ema_fisher": true,
+      "fisher_ema_decay": 0.9,
+      "auto_derive_hparams": false,
+      "protection_level": 0.5,
+      "full_retrain_epochs": null,
+      "num_workers": 0
+    }
+  },
+  "tasks": [
+    {
+      "task_id": 0,
+      "delta": {
+        "top1": 0.5045,
+        "top5": 1.0,
+        "ece": 0.4669138218984008,
+        "ece_old": null,
+        "ece_new": 0.4669138218984008,
+        "per_class_acc": {
+          "0": 0.988,
+          "1": 0.021
+        },
+        "wall_time_seconds": 107.91537356376648
+      },
+      "full_retrain": {
+        "top1": 0.5575,
+        "top5": 1.0,
+        "ece": 0.2970728292092681,
+        "ece_old": null,
+        "ece_new": 0.2970728292092681,
+        "per_class_acc": {
+          "0": 0.129,
+          "1": 0.986
+        },
+        "wall_time_seconds": 120.72442150115967
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 62.0181770324707,
+        "class_ids": [
+          0,
+          1
+        ]
+      },
+      "oracle": {
+        "risk_estimate_pre": 0.0,
+        "drift_realized_post": 0.0,
+        "risk_estimate_held": true,
+        "bound_type": "empirical_spectral",
+        "calibrated": false,
+        "bound_is_formal": false,
+        "empirical_calibrated_estimate": null,
+        "pac_style_gap": null
+      },
+      "drift": {
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {},
+        "detector_scores": {},
+        "input_shift_score": 0.0
+      },
+      "decision": {
+        "state": "SAFE_DELTA",
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": true,
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "reason": "bound held, no shift detected",
+        "compute_savings_percent": 10.610154745922843,
+        "confidence": 1.0,
+        "recommended_action": "delta_update"
+      },
+      "equivalence_gap": 0.906300811268472,
+      "forgetting": 0.05300000000000005,
+      "compute_savings_percent": 10.610154745922843,
+      "cil_metrics": {
+        "forward_transfer_top1": null,
+        "forgetting_per_task": {},
+        "backward_transfer_per_task": {},
+        "mean_forgetting": null,
+        "mean_backward_transfer": null
+      },
+      "train": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.6333624540080487
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.6702222222222223
+        ],
+        "projected_step_fraction": 0.0,
+        "skipped": false
+      }
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "top1": 0.299,
+        "top5": 1.0,
+        "ece": 0.2535976723991335,
+        "ece_old": 0.10523943917080761,
+        "ece_new": 0.41880445955693724,
+        "per_class_acc": {
+          "0": 0.903,
+          "1": 0.0,
+          "2": 0.223,
+          "3": 0.07
+        },
+        "wall_time_seconds": 40.65555810928345
+      },
+      "full_retrain": {
+        "top1": 0.29,
+        "top5": 1.0,
+        "ece": 0.28313467693328853,
+        "ece_old": 0.5604123088419437,
+        "ece_new": 0.023230577677488328,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.206,
+          "3": 0.954
+        },
+        "wall_time_seconds": 110.95916295051575
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 319.34619140625,
+        "class_ids": [
+          0,
+          1
+        ]
+      },
+      "oracle": {
+        "risk_estimate_pre": 0.0,
+        "drift_realized_post": 0.0013619523670058697,
+        "risk_estimate_held": false,
+        "bound_type": "protected_params_frozen",
+        "calibrated": false,
+        "bound_is_formal": false,
+        "empirical_calibrated_estimate": null,
+        "pac_style_gap": {
+          "value": 0.012238734153404082,
+          "delta": 0.05,
+          "bound_type": "pac_style_hoeffding",
+          "calibrated": false,
+          "bound_is_formal": true
+        }
+      },
+      "drift": {
+        "shift_score": 0.00730032136195824,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {
+          "0": 7.638894021511078e-05,
+          "1": 0.0008005993440747261
+        },
+        "detector_scores": {
+          "kl_manifold": 0.00043849414214491844,
+          "mmd_input": 0.00121672022699304,
+          "cusum_input": 0.0
+        },
+        "input_shift_score": 0.00121672022699304
+      },
+      "decision": {
+        "state": "BOUND_VIOLATED",
+        "pre_bound": 0.0,
+        "post_bound": 0.0013619523670058697,
+        "bound_held": false,
+        "shift_score": 0.00730032136195824,
+        "shift_detected": false,
+        "reason": "post-training drift exceeded the pre-training bound",
+        "compute_savings_percent": 63.35989112731993,
+        "confidence": 1.0,
+        "recommended_action": "full_retrain"
+      },
+      "equivalence_gap": 0.946435331526266,
+      "forgetting": 0.0,
+      "compute_savings_percent": 63.35989112731993,
+      "cil_metrics": {
+        "forward_transfer_top1": 0.4595,
+        "forgetting_per_task": {
+          "0": 0.052999999999999936
+        },
+        "backward_transfer_per_task": {
+          "0": -0.052999999999999936
+        },
+        "mean_forgetting": 0.052999999999999936,
+        "mean_backward_transfer": -0.052999999999999936
+      },
+      "train": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.6611213088035583
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.6053000092506409
+        ],
+        "projected_step_fraction": null,
+        "skipped": false
+      }
+    }
+  ],
+  "bounds_timeline": [
+    {
+      "task_id": 0,
+      "risk_estimate_pre": 0.0,
+      "drift_realized_post": 0.0,
+      "risk_estimate_held": true,
+      "bound_type": "empirical_spectral",
+      "bound_is_formal": false
+    },
+    {
+      "task_id": 1,
+      "risk_estimate_pre": 0.0,
+      "drift_realized_post": 0.0013619523670058697,
+      "risk_estimate_held": false,
+      "bound_type": "protected_params_frozen",
+      "bound_is_formal": false
+    }
+  ],
+  "epoch_history": [
+    {
+      "task_id": 0,
+      "delta": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.6333624540080487
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.6702222222222223
+        ],
+        "projected_step_fraction": 0.0,
+        "skipped": false
+      }
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.6611213088035583
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.6053000092506409
+        ],
+        "projected_step_fraction": null,
+        "skipped": false
+      }
+    }
+  ],
+  "final_summary": {
+    "mean_delta_top1": 0.40174999999999994,
+    "mean_full_retrain_top1": 0.42374999999999996,
+    "mean_equivalence_gap": 0.926368071397369,
+    "mean_compute_savings": 36.98502293662139,
+    "decisions": [
+      "SAFE_DELTA",
+      "BOUND_VIOLATED"
+    ],
+    "total_wall_time_delta": 148.57093167304993,
+    "total_wall_time_full_retrain": 231.68358445167542
+  }
+}

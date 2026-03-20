@@ -25,7 +25,15 @@ from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
 from ..core.updater import FrozenBackboneAnalyticUpdater, FullRetrainUpdater, GeometryConstrainedUpdater
-from ..interfaces.base import Decision, DriftDetector, DriftResult, ManifoldUpdater, TaskSnapshot, TrainArtifacts
+from ..interfaces.base import (
+    Decision,
+    DriftDetector,
+    DriftResult,
+    ManifoldUpdater,
+    OracleEstimate,
+    TaskSnapshot,
+    TrainArtifacts,
+)
 from ..modeling import MELDModel
 from ..models.backbone import resnet20, resnet32, resnet44, resnet56
 from ..models.classifier import IncrementalClassifier
@@ -148,7 +156,12 @@ class BenchmarkRunner:
                 forward_transfer_top1 = float(ft_metrics["top1"])
 
             snapshot_before = None
-            pre_bound = 0.0
+            pre_risk_estimate = OracleEstimate(
+                value=0.0,
+                bound_type="empirical_spectral",
+                calibrated=False,
+                bound_is_formal=False,
+            )
             if task_id > 0:
                 # Adaptive Fisher EMA decay: larger observed drift -> faster
                 # decay (smaller EMA factor) for the next snapshot.
@@ -174,18 +187,23 @@ class BenchmarkRunner:
                 else:
                     task_train_config = self.config.train
                 if self._uses_frozen_analytic(task_id):
-                    pre_bound = 0.0
+                    pre_risk_estimate = OracleEstimate(
+                        value=0.0,
+                        bound_type="protected_params_frozen",
+                        calibrated=False,
+                        bound_is_formal=False,
+                    )
                 else:
-                    pre_bound = self.safety_oracle.pre_bound(snapshot_before, task_train_config)
-                    task_train_config, pre_bound = self._make_safe_train_config(
+                    pre_risk_estimate = self._pre_risk_estimate(snapshot_before, task_train_config)
+                    task_train_config, pre_risk_estimate = self._make_safe_train_config(
                         snapshot_before,
                         task_train_config,
-                        pre_bound,
+                        pre_risk_estimate,
                     )
             else:
                 task_train_config = self._base_train_config()
 
-            if task_id > 0 and pre_bound > self.config.bound_tolerance:
+            if task_id > 0 and pre_risk_estimate.value > self.config.bound_tolerance:
                 delta_artifacts = TrainArtifacts(
                     epochs_run=0,
                     lambda_schedule=[],
@@ -198,13 +216,18 @@ class BenchmarkRunner:
                     skipped=True,
                 )
                 snapshot_after = snapshot_before
-                post_bound = pre_bound
+                post_drift_realized = OracleEstimate(
+                    value=pre_risk_estimate.value,
+                    bound_type="training_skipped",
+                    calibrated=False,
+                    bound_is_formal=False,
+                )
                 drift_result = DriftResult(0.0, False, {}, "none")
                 delta_metrics = None
                 decision = Decision(
                     state="BOUND_EXCEEDED",
-                    pre_bound=pre_bound,
-                    post_bound=post_bound,
+                    pre_bound=pre_risk_estimate.value,
+                    post_bound=post_drift_realized.value,
                     bound_held=False,
                     shift_score=0.0,
                     shift_detected=False,
@@ -226,18 +249,23 @@ class BenchmarkRunner:
                         snapshot_before.class_ids,
                         task_id,
                     )
-                    post_bound = self.safety_oracle.post_bound(snapshot_before, snapshot_after)
+                    post_drift_realized = self._post_drift_realized(snapshot_before, snapshot_after)
                     drift_result = self.drift_detector.detect(snapshot_before, snapshot_after)
                 else:
                     snapshot_after = self.snapshot_strategy.capture(
                         model, task_loader, new_class_ids, task_id
                     )
-                    post_bound = 0.0
+                    post_drift_realized = OracleEstimate(
+                        value=0.0,
+                        bound_type="no_prior_task",
+                        calibrated=False,
+                        bound_is_formal=False,
+                    )
                     drift_result = DriftResult(0.0, False, {}, "none")
 
                 decision = self.deploy_policy.decide(
-                    pre_bound,
-                    post_bound,
+                    pre_risk_estimate.value,
+                    post_drift_realized.value,
                     drift_result,
                     _PolicyConfigProxy(
                         shift_threshold=self.config.shift_threshold,
@@ -311,8 +339,8 @@ class BenchmarkRunner:
                     delta_metrics,
                     full_metrics,
                     snapshot_after,
-                    pre_bound,
-                    post_bound,
+                    pre_risk_estimate,
+                    post_drift_realized,
                     drift_result,
                     decision,
                     delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
@@ -323,9 +351,11 @@ class BenchmarkRunner:
                 results["bounds_timeline"].append(
                     {
                         "task_id": task_id,
-                        "epsilon_max": float(pre_bound),
-                        "epsilon_actual": float(post_bound),
-                        "bound_held": bool(decision.bound_held if task_id > 0 else True),
+                        "risk_estimate_pre": float(pre_risk_estimate.value),
+                        "drift_realized_post": float(post_drift_realized.value),
+                        "risk_estimate_held": bool(decision.bound_held if task_id > 0 else True),
+                        "bound_type": pre_risk_estimate.bound_type,
+                        "bound_is_formal": pre_risk_estimate.bound_is_formal,
                     }
                 )
                 results["epoch_history"].append(
@@ -405,8 +435,8 @@ class BenchmarkRunner:
                 delta_metrics,
                 full_metrics,
                 snapshot_after,
-                pre_bound,
-                post_bound,
+                pre_risk_estimate,
+                post_drift_realized,
                 drift_result,
                 decision,
                 delta_wall_time_seconds=float(delta_artifacts.wall_time_seconds),
@@ -417,9 +447,11 @@ class BenchmarkRunner:
             results["bounds_timeline"].append(
                 {
                     "task_id": task_id,
-                    "epsilon_max": float(pre_bound),
-                    "epsilon_actual": float(post_bound),
-                    "bound_held": bool(decision.bound_held if task_id > 0 else True),
+                    "risk_estimate_pre": float(pre_risk_estimate.value),
+                    "drift_realized_post": float(post_drift_realized.value),
+                    "risk_estimate_held": bool(decision.bound_held if task_id > 0 else True),
+                    "bound_type": pre_risk_estimate.bound_type,
+                    "bound_is_formal": pre_risk_estimate.bound_is_formal,
                 }
             )
             results["epoch_history"].append(
@@ -744,32 +776,52 @@ class BenchmarkRunner:
             head.weight.data[offset].copy_(prototype)
             head.bias.data[offset].zero_()
 
+    def _pre_risk_estimate(self, snapshot: TaskSnapshot, train_config: Any) -> OracleEstimate:
+        if hasattr(self.safety_oracle, "pre_risk_estimate"):
+            return self.safety_oracle.pre_risk_estimate(snapshot, train_config)
+        return OracleEstimate(
+            value=float(self.safety_oracle.pre_bound(snapshot, train_config)),
+            bound_type="empirical_spectral",
+            calibrated=False,
+            bound_is_formal=False,
+        )
+
+    def _post_drift_realized(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> OracleEstimate:
+        if hasattr(self.safety_oracle, "post_drift_realized"):
+            return self.safety_oracle.post_drift_realized(snapshot_before, snapshot_after)
+        return OracleEstimate(
+            value=float(self.safety_oracle.post_bound(snapshot_before, snapshot_after)),
+            bound_type="realized_old_manifold_drift",
+            calibrated=False,
+            bound_is_formal=False,
+        )
+
     def _make_safe_train_config(
         self,
         snapshot_before: TaskSnapshot,
         task_train_config: Any,
-        pre_bound: float,
-    ) -> tuple[Any, float]:
-        if pre_bound <= self.config.bound_tolerance:
-            return task_train_config, pre_bound
+        pre_risk_estimate: OracleEstimate,
+    ) -> tuple[Any, OracleEstimate]:
+        if pre_risk_estimate.value <= self.config.bound_tolerance:
+            return task_train_config, pre_risk_estimate
         if not bool(getattr(task_train_config, "auto_scale_safe_update", True)):
-            return task_train_config, pre_bound
+            return task_train_config, pre_risk_estimate
 
         min_safe_lr = float(getattr(task_train_config, "min_safe_lr", 1e-5))
         adjusted_config = task_train_config
-        adjusted_bound = pre_bound
+        adjusted_estimate = pre_risk_estimate
 
         for _ in range(4):
-            if adjusted_bound <= self.config.bound_tolerance:
+            if adjusted_estimate.value <= self.config.bound_tolerance:
                 break
-            ratio = self.config.bound_tolerance / max(adjusted_bound, 1e-12)
+            ratio = self.config.bound_tolerance / max(adjusted_estimate.value, 1e-12)
             safe_lr = max(min_safe_lr, float(adjusted_config.lr) * ratio * 0.95)
             if safe_lr >= float(adjusted_config.lr):
                 break
             adjusted_config = replace(adjusted_config, lr=safe_lr)
-            adjusted_bound = self.safety_oracle.pre_bound(snapshot_before, adjusted_config)
+            adjusted_estimate = self._pre_risk_estimate(snapshot_before, adjusted_config)
 
-        return adjusted_config, adjusted_bound
+        return adjusted_config, adjusted_estimate
 
     def _base_train_config(self) -> Any:
         base_epochs = getattr(self.config.train, "base_epochs", None)
@@ -793,18 +845,27 @@ class BenchmarkRunner:
         delta_metrics: dict[str, Any] | None,
         full_metrics: dict[str, Any],
         snapshot: TaskSnapshot | None,
-        pre_bound: float,
-        post_bound: float,
+        pre_risk_estimate: OracleEstimate,
+        post_drift_realized: OracleEstimate,
         drift_result: DriftResult,
         decision: Decision,
         delta_wall_time_seconds: float,
         cil_metrics: dict[str, Any] | None = None,
         train_artifacts: TrainArtifacts | None = None,
     ) -> dict[str, Any]:
-        if hasattr(self.safety_oracle, "pac_equivalence_gap"):
-            pac_epsilon, pac_delta = self.safety_oracle.pac_equivalence_gap()
+        if (
+            task_id > 0
+            and pre_risk_estimate.value > 0.0
+            and hasattr(self.safety_oracle, "empirical_calibrated_estimate")
+            and snapshot is not None
+        ):
+            calibrated_estimate = self.safety_oracle.empirical_calibrated_estimate(snapshot, self.config.train)
         else:
-            pac_epsilon, pac_delta = 0.0, 0.0
+            calibrated_estimate = None
+        if task_id > 0 and hasattr(self.safety_oracle, "pac_style_gap") and snapshot is not None:
+            pac_style = self.safety_oracle.pac_style_gap(snapshot)
+        else:
+            pac_style = None
         fc = np.asarray(full_metrics["confusion_matrix"])
         if delta_metrics is not None:
             dc = np.asarray(delta_metrics["confusion_matrix"])
@@ -846,11 +907,33 @@ class BenchmarkRunner:
             },
             "snapshot": {"fisher_eigenvalue_max": snapshot.fisher_eigenvalue_max if snapshot else 0.0, "class_ids": snapshot.class_ids if snapshot else []},
             "oracle": {
-                "pre_bound": pre_bound,
-                "post_bound": post_bound,
-                "bound_held": decision.bound_held if task_id > 0 else True,
-                "pac_epsilon": pac_epsilon,
-                "pac_delta": pac_delta,
+                "risk_estimate_pre": pre_risk_estimate.value,
+                "drift_realized_post": post_drift_realized.value,
+                "risk_estimate_held": decision.bound_held if task_id > 0 else True,
+                "bound_type": pre_risk_estimate.bound_type,
+                "calibrated": pre_risk_estimate.calibrated,
+                "bound_is_formal": pre_risk_estimate.bound_is_formal,
+                "empirical_calibrated_estimate": (
+                    {
+                        "value": calibrated_estimate.value,
+                        "bound_type": calibrated_estimate.bound_type,
+                        "calibrated": calibrated_estimate.calibrated,
+                        "bound_is_formal": calibrated_estimate.bound_is_formal,
+                    }
+                    if calibrated_estimate is not None
+                    else None
+                ),
+                "pac_style_gap": (
+                    {
+                        "value": pac_style.value,
+                        "delta": pac_style.delta,
+                        "bound_type": pac_style.bound_type,
+                        "calibrated": pac_style.calibrated,
+                        "bound_is_formal": pac_style.bound_is_formal,
+                    }
+                    if pac_style is not None
+                    else None
+                ),
             },
             "drift": {
                 "shift_score": drift_result.shift_score,

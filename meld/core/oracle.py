@@ -6,32 +6,68 @@ import math
 
 import numpy as np
 
-from ..interfaces.base import SafetyOracle, TaskSnapshot
+from ..interfaces.base import OracleEstimate, SafetyOracle, TaskSnapshot
 
 
 class SpectralSafetyOracle(SafetyOracle):
     def __init__(self) -> None:
         self._calibration_history: list[float] = []
-        self._last_pre_bound: float | None = None
+        self._last_pre_risk_estimate: OracleEstimate | None = None
 
-    def pre_bound(self, snapshot: TaskSnapshot, train_config: object) -> float:
+    def pre_risk_estimate(self, snapshot: TaskSnapshot, train_config: object) -> OracleEstimate:
         total_steps = max(1, int(train_config.epochs) * int(snapshot.steps_per_epoch))
-        spectral = float(snapshot.fisher_eigenvalue_max * float(train_config.lr) * math.sqrt(total_steps * snapshot.embedding_dim))
+        spectral = float(
+            snapshot.fisher_eigenvalue_max
+            * float(train_config.lr)
+            * math.sqrt(total_steps * snapshot.embedding_dim)
+        )
         if snapshot.mean_gradient_norm > 0.0:
-            data_dependent = float(snapshot.fisher_eigenvalue_max * snapshot.mean_gradient_norm * float(train_config.lr) * total_steps)
-            bound = min(spectral, data_dependent)
+            data_dependent = float(
+                snapshot.fisher_eigenvalue_max
+                * snapshot.mean_gradient_norm
+                * float(train_config.lr)
+                * total_steps
+            )
+            value = min(spectral, data_dependent)
         else:
-            bound = spectral
-        if self._calibration_history:
-            calibration = float(np.clip(np.mean(self._calibration_history), 0.05, 1.0))
-            bound *= calibration
-        self._last_pre_bound = bound
-        return bound
+            value = spectral
+        estimate = OracleEstimate(
+            value=value,
+            bound_type="empirical_spectral",
+            calibrated=False,
+            bound_is_formal=False,
+        )
+        self._last_pre_risk_estimate = estimate
+        return estimate
 
-    def post_bound(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> float:
+    def empirical_calibrated_estimate(self, snapshot: TaskSnapshot, train_config: object) -> OracleEstimate:
+        base = self.pre_risk_estimate(snapshot, train_config)
+        if not self._calibration_history:
+            return OracleEstimate(
+                value=base.value,
+                bound_type="empirical_spectral_calibrated",
+                calibrated=True,
+                bound_is_formal=False,
+            )
+        calibration = float(np.clip(np.mean(self._calibration_history), 0.05, 1.0))
+        return OracleEstimate(
+            value=base.value * calibration,
+            bound_type="empirical_spectral_calibrated",
+            calibrated=True,
+            bound_is_formal=False,
+        )
+
+    def post_drift_realized(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> OracleEstimate:
         shared = sorted(set(snapshot_before.class_ids).intersection(snapshot_after.class_ids))
         if not shared:
-            return 0.0
+            estimate = OracleEstimate(
+                value=0.0,
+                bound_type="realized_old_manifold_drift",
+                calibrated=False,
+                bound_is_formal=False,
+            )
+            return estimate
+
         drifts = []
         for class_id in shared:
             before = snapshot_before.class_means[class_id]
@@ -39,24 +75,39 @@ class SpectralSafetyOracle(SafetyOracle):
             denom = float(np.linalg.norm(before)) + 1e-12
             drifts.append(float(np.linalg.norm(after - before) / denom))
         value = float(np.mean(drifts))
-        if self._last_pre_bound and self._last_pre_bound > 0:
-            self._calibration_history.append(min(1.0, value / self._last_pre_bound))
+        if self._last_pre_risk_estimate is not None and self._last_pre_risk_estimate.value > 0.0:
+            ratio = value / self._last_pre_risk_estimate.value
+            self._calibration_history.append(float(np.clip(ratio, 0.05, 1.0)))
             self._calibration_history = self._calibration_history[-32:]
-        return value
+        return OracleEstimate(
+            value=value,
+            bound_type="realized_old_manifold_drift",
+            calibrated=False,
+            bound_is_formal=False,
+        )
 
-    def pac_equivalence_gap(self, confidence: float = 0.95) -> tuple[float, float]:
-        """Return an empirical PAC-style summary from observed bound tightness.
+    def pac_style_gap(self, snapshot: TaskSnapshot, delta: float = 0.05) -> OracleEstimate:
+        clipped_delta = float(np.clip(delta, 1e-12, 1.0 - 1e-12))
+        n = max(1, int(snapshot.dataset_size))
+        value = float(math.sqrt(math.log(1.0 / clipped_delta) / (2.0 * n)))
+        return OracleEstimate(
+            value=value,
+            bound_type="pac_style_hoeffding",
+            calibrated=False,
+            bound_is_formal=True,
+            delta=clipped_delta,
+        )
 
-        This is a calibrated reporting utility, not a formal Rademacher-style
-        theorem. `epsilon` is the confidence-quantile scaled bound and `delta`
-        is the remaining tail probability.
-        """
+    def pac_equivalence_gap(self, snapshot: TaskSnapshot | None = None, confidence: float = 0.95) -> tuple[float, float]:
+        if snapshot is None:
+            if self._last_pre_risk_estimate is None:
+                return 0.0, float(np.clip(1.0 - confidence, 1e-6, 1.0))
+            return self._last_pre_risk_estimate.value, float(np.clip(1.0 - confidence, 1e-6, 1.0))
+        estimate = self.pac_style_gap(snapshot, delta=1.0 - confidence)
+        return estimate.value, float(estimate.delta or (1.0 - confidence))
 
-        delta = float(np.clip(1.0 - confidence, 1e-6, 1.0))
-        if self._last_pre_bound is None:
-            return 0.0, delta
-        if not self._calibration_history:
-            return float(self._last_pre_bound), delta
-        quantile = float(np.quantile(np.asarray(self._calibration_history), np.clip(confidence, 0.0, 1.0)))
-        epsilon = float(self._last_pre_bound * max(1.0, quantile))
-        return epsilon, delta
+    def pre_bound(self, snapshot: TaskSnapshot, train_config: object) -> float:
+        return self.pre_risk_estimate(snapshot, train_config).value
+
+    def post_bound(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> float:
+        return self.post_drift_realized(snapshot_before, snapshot_after).value

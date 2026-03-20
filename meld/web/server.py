@@ -32,7 +32,7 @@ ROOT_TEMPLATE = """
     <button type="submit">Launch</button>
   </form>
   <p><a href="/monitor">Monitor</a> | <a href="/results">Results JSON</a> | <a href="/results/db">Results DB</a> | <a href="/results/csv">Export CSV</a></p>
-  <h3>Bound Timeline</h3>
+  <h3>Risk Timeline</h3>
   <canvas id="bound-chart" width="800" height="240" style="border:1px solid #ddd"></canvas>
   <pre id="status"></pre>
   <script>
@@ -64,8 +64,8 @@ ROOT_TEMPLATE = """
         return;
       }
       const xs = timeline.map(p => Number(p.task_id));
-      const ys1 = timeline.map(p => Number(p.epsilon_max || 0));
-      const ys2 = timeline.map(p => Number(p.epsilon_actual || 0));
+      const ys1 = timeline.map(p => Number(p.risk_estimate_pre || 0));
+      const ys2 = timeline.map(p => Number(p.drift_realized_post || 0));
       const yMax = Math.max(1e-6, ...ys1, ...ys2);
       const margin = 30;
       const w = canvas.width - margin * 2;
@@ -91,7 +91,7 @@ ROOT_TEMPLATE = """
       drawLine(ys1, "#d33");
       drawLine(ys2, "#36c");
       ctx.fillStyle = "#000";
-      ctx.fillText("red: epsilon_max, blue: epsilon_actual", margin, 16);
+      ctx.fillText("red: risk_estimate_pre, blue: drift_realized_post", margin, 16);
     }
     refreshBoundChart();
     setInterval(refreshBoundChart, 2000);
@@ -310,7 +310,7 @@ def results_csv() -> StreamingResponse:
     payload = json.loads(RESULTS_PATH.read_text(encoding="utf-8"))
     tasks = payload.get("tasks", [])
     lines = [
-        "task_id,delta_top1,full_top1,pre_bound,post_bound,bound_held,compute_savings_percent"
+        "task_id,delta_top1,full_top1,risk_estimate_pre,drift_realized_post,risk_estimate_held,bound_is_formal,compute_savings_percent"
     ]
     for t in tasks:
         delta = t.get("delta", {}) if isinstance(t.get("delta"), dict) else {}
@@ -322,9 +322,10 @@ def results_csv() -> StreamingResponse:
                     str(t.get("task_id", "")),
                     str(delta.get("top1", "")),
                     str(full.get("top1", "")),
-                    str(oracle.get("pre_bound", "")),
-                    str(oracle.get("post_bound", "")),
-                    str(oracle.get("bound_held", "")),
+                    str(oracle.get("risk_estimate_pre", "")),
+                    str(oracle.get("drift_realized_post", "")),
+                    str(oracle.get("risk_estimate_held", "")),
+                    str(oracle.get("bound_is_formal", "")),
                     str(t.get("compute_savings_percent", "")),
                 ]
             )

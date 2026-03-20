@@ -1,12 +1,12 @@
 # MELD
 
-MELD (Manifold-Equivalent Learning with Deployment guarantees) is a class-incremental learning framework built around three hard requirements: zero replay, pre-training safety checks, and structured deployment decisions. It stores model geometry instead of historical samples, derives a safety bound before training, and decides whether a delta update is safe to ship after training.
+MELD (Manifold-Equivalent Learning with Deployment guarantees) is a class-incremental learning framework built around three hard requirements: zero replay, pre-training safety checks, and structured deployment decisions. It stores model geometry instead of historical samples, derives an empirical pre-training risk estimate before training, and decides whether a delta update is safe to ship after training.
 
 ## What MELD does
 
 - Uses only new task data during incremental updates.
 - Captures replay-free snapshots with per-class means, diagonal covariances, classifier norms, and diagonal Fisher information.
-- Computes a spectral pre-training safety bound and skips unsafe runs.
+- Computes an empirical spectral pre-training risk estimate and skips unsafe runs.
 - Preserves old-class geometry with a KL penalty and weight importance with an EWC-style penalty.
 - Corrects classifier norm drift analytically after training.
 - Detects class manifold shift and outputs a four-state deployment decision.
