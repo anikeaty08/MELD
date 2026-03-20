@@ -55,7 +55,6 @@ CIFAR-10-C/
 
 # Reference clones and local scratch files
 _delta_ref/
-final.txt
-solnnn
+
 prompt
 test_backbone_pretrained.py
