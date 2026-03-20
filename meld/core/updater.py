@@ -634,12 +634,12 @@ class FrozenBackboneAnalyticUpdater(ManifoldUpdater):
                 targets = targets.to(device)
                 embeddings = model.embed(inputs)
                 features.append(embeddings)
-                for class_id in targets.unique().tolist():
+                for class_id in targets.detach().cpu().unique().tolist():
                     if int(class_id) not in class_to_local:
                         _, offset = model.classifier.class_to_head[int(class_id)]
                         class_to_local[int(class_id)] = int(offset)
                 mapped = torch.tensor(
-                    [class_to_local[int(class_id)] for class_id in targets.tolist()],
+                    [class_to_local[int(class_id)] for class_id in targets.detach().cpu().tolist()],
                     device=device,
                     dtype=torch.long,
                 )
