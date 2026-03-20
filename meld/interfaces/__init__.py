@@ -13,6 +13,7 @@ from .base import (
     TrainArtifacts,
     VALID_DECISION_STATES,
 )
+from .encoder import EncoderAdapter, MLPEncoderAdapter, MLPEncoderConfig
 
 __all__ = [
     "BiasCorrector",
@@ -26,4 +27,7 @@ __all__ = [
     "TaskSnapshot",
     "TrainArtifacts",
     "VALID_DECISION_STATES",
+    "EncoderAdapter",
+    "MLPEncoderAdapter",
+    "MLPEncoderConfig",
 ]
