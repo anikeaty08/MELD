@@ -246,10 +246,11 @@ class BenchmarkRunner:
                 )
                 if snapshot_before is not None:
                     model = self.corrector.correct(model, snapshot_before)
+                    all_known_class_ids = list(range(model.classifier.num_classes))
                     snapshot_after = self.snapshot_strategy.capture(
                         model,
-                        self._merged_loader(all_seen_loaders[:-1], shuffle=False),
-                        snapshot_before.class_ids,
+                        self._merged_loader(all_seen_loaders, shuffle=False),
+                        all_known_class_ids,
                         task_id,
                     )
                     post_drift_realized = self._post_drift_realized(snapshot_before, snapshot_after)
@@ -266,16 +267,6 @@ class BenchmarkRunner:
                     )
                     drift_result = DriftResult(0.0, False, {}, "none")
 
-                decision = self.deploy_policy.decide(
-                    pre_risk_estimate.value,
-                    post_drift_realized.value,
-                    drift_result,
-                    _PolicyConfigProxy(
-                        shift_threshold=self.config.shift_threshold,
-                        delta_wall_time_seconds=delta_artifacts.wall_time_seconds,
-                        full_retrain_wall_time_seconds=0.0,
-                    ),
-                )
                 old_class_ids = list(range(0, task_id * self.config.classes_per_task))
                 new_class_ids = list(
                     range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)
@@ -285,6 +276,16 @@ class BenchmarkRunner:
                     eval_loaders[: task_id + 1],
                     old_class_ids=old_class_ids,
                     new_class_ids=new_class_ids,
+                )
+                decision = self.deploy_policy.decide(
+                    pre_risk_estimate.value,
+                    post_drift_realized.value,
+                    drift_result,
+                    _PolicyConfigProxy(
+                        shift_threshold=self.config.shift_threshold,
+                        delta_wall_time_seconds=delta_artifacts.wall_time_seconds,
+                        full_retrain_wall_time_seconds=full_time,
+                    ),
                 )
                 delta_metrics = self._evaluate(
                     model,

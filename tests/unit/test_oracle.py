@@ -121,7 +121,16 @@ def test_pac_equivalence_bound_uses_importance_weights_and_shift():
         parameter_reference=[np.array([0.1, 0.0]), np.array([1.1])],
     )
     estimate = oracle.pac_equivalence_bound(before, after, delta=0.05)
+    expected_n = 3
+    expected_var = float(np.var(np.array([0.5, 1.5, 1.0], dtype=np.float32)))
+    expected_shift = float(np.sqrt((0.1**2) + (0.1**2)))
+    expected = (
+        np.sqrt(expected_var / expected_n)
+        + (0.3 * expected_shift)
+        + np.sqrt(np.log(1.0 / 0.05) / (2.0 * expected_n))
+    )
     assert estimate.value > 0.0
+    assert np.isclose(estimate.value, expected)
     assert estimate.bound_type == "pac_importance_weighted"
     assert estimate.bound_is_formal is True
     assert estimate.delta == 0.05

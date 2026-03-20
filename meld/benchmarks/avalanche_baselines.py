@@ -127,18 +127,43 @@ def run_avalanche_baselines(config: Any, device: torch.device) -> dict[str, Any]
             strategy = factory(model, optimizer, criterion)
 
             start = time.time()
-            forgetting_values: list[float] = []
+            best_per_task: list[float] = []
+            mean_forgetting = 0.0
             top1 = 0.0
             ece = 0.0
 
             for task_id, experience in enumerate(benchmark.train_stream[: int(config.num_tasks)]):
                 strategy.train(experience, num_workers=int(getattr(config.train, "num_workers", 0)))
                 eval_experiences = benchmark.test_stream[: task_id + 1]
+                current_per_task: list[float] = []
+                for eval_task_id, eval_experience in enumerate(eval_experiences):
+                    task_logits, task_targets = _collect_logits(
+                        strategy.model,
+                        [eval_experience],
+                        int(config.train.batch_size),
+                        device,
+                    )
+                    task_metrics = compute_classification_metrics(task_logits, task_targets)
+                    task_top1 = float(task_metrics["top1"])
+                    current_per_task.append(task_top1)
+                    if eval_task_id >= len(best_per_task):
+                        best_per_task.append(task_top1)
+                    else:
+                        best_per_task[eval_task_id] = max(best_per_task[eval_task_id], task_top1)
+
+                forgetting_values = [
+                    max(0.0, best_per_task[k] - current_per_task[k])
+                    for k in range(task_id)
+                ]
+                mean_forgetting = (
+                    float(sum(forgetting_values) / len(forgetting_values))
+                    if forgetting_values
+                    else 0.0
+                )
                 logits, targets = _collect_logits(strategy.model, eval_experiences, int(config.train.batch_size), device)
                 metrics = compute_classification_metrics(logits, targets)
                 top1 = float(metrics["top1"])
                 ece = float(metrics["ece"])
-                forgetting_values.append(max(0.0, 1.0 - top1))
 
             results[name] = _serialize(
                 _BaselineConfig(
@@ -146,7 +171,7 @@ def run_avalanche_baselines(config: Any, device: torch.device) -> dict[str, Any]
                     status="completed",
                     top1=top1,
                     ece=ece,
-                    forgetting=float(sum(forgetting_values) / max(1, len(forgetting_values))),
+                    forgetting=mean_forgetting,
                     wall_time_seconds=time.time() - start,
                 )
             )
@@ -170,13 +195,21 @@ def run_avalanche_baselines(config: Any, device: torch.device) -> dict[str, Any]
 
 
 def _build_benchmark(config: Any, split_cifar10: Any, split_cifar100: Any, transforms: Any) -> Any:
+    dataset = str(config.dataset).upper().replace("-", "")
+    if dataset == "CIFAR10":
+        mean = (0.4914, 0.4822, 0.4465)
+        std = (0.2470, 0.2435, 0.2616)
+    elif dataset == "CIFAR100":
+        mean = (0.5071, 0.4867, 0.4408)
+        std = (0.2675, 0.2565, 0.2761)
+    else:
+        raise ValueError(f"Unsupported Avalanche dataset: {config.dataset}")
     transform = transforms.Compose(
         [
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+            transforms.Normalize(mean, std),
         ]
     )
-    dataset = str(config.dataset).upper().replace("-", "")
     common = {
         "n_experiences": int(config.num_tasks),
         "return_task_id": True,
@@ -189,7 +222,7 @@ def _build_benchmark(config: Any, split_cifar10: Any, split_cifar100: Any, trans
         return split_cifar10(**common)
     if dataset == "CIFAR100":
         return split_cifar100(**common)
-    raise ValueError(f"Unsupported Avalanche dataset: {config.dataset}")
+    raise AssertionError("unreachable")
 
 
 def _collect_logits(

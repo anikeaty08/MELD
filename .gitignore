@@ -33,3 +33,5 @@ data/
 
 # Reference clones and local scratch files
 _delta_ref/
+
+tests/

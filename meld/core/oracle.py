@@ -113,8 +113,8 @@ class SpectralSafetyOracle(SafetyOracle):
         delta: float = 0.05,
     ) -> OracleEstimate:
         clipped_delta = float(np.clip(delta, 1e-12, 1.0 - 1e-12))
-        n = max(1, int(snapshot_before.dataset_size))
         weights = self._importance_weights(snapshot_before)
+        n = max(1, int(weights.size) if weights.size else int(snapshot_before.dataset_size))
         weight_var = float(np.var(weights)) if weights.size else 0.0
         iw_term = math.sqrt(max(weight_var, 0.0) / n)
         curvature_term = 0.0
