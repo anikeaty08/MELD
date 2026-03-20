@@ -18,6 +18,11 @@ dependencies = [
   "uvicorn>=0.30",
 ]
 
+[project.urls]
+Homepage = "https://github.com/anikeaty08/MELD"
+Repository = "https://github.com/anikeaty08/MELD.git"
+Issues = "https://github.com/anikeaty08/MELD/issues"
+
 [project.optional-dependencies]
 benchmark = [
   "avalanche-lib>=0.6.0",

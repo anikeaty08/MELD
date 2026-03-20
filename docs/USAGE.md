@@ -1,5 +1,7 @@
 # Usage
 
+Repository: [anikeaty08/MELD](https://github.com/anikeaty08/MELD)
+
 ## Virtual Environment
 
 Use MELD from the project virtual environment.
@@ -7,6 +9,8 @@ Use MELD from the project virtual environment.
 ### Windows PowerShell
 
 ```powershell
+git clone https://github.com/anikeaty08/MELD.git
+cd MELD
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -17,6 +21,8 @@ python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
 ### Windows CMD
 
 ```bat
+git clone https://github.com/anikeaty08/MELD.git
+cd MELD
 python -m venv .venv
 .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
@@ -27,6 +33,8 @@ python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
 ### macOS / Linux
 
 ```bash
+git clone https://github.com/anikeaty08/MELD.git
+cd MELD
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip

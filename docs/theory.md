@@ -1,5 +1,7 @@
 # MELD Theory
 
+Source repository: [anikeaty08/MELD](https://github.com/anikeaty08/MELD)
+
 MELD frames continual learning as a *bounded-drift control problem*. For each
 incoming task, the system computes a pre-training risk estimate
 (`risk_estimate_pre`), executes a constrained update, and then measures
