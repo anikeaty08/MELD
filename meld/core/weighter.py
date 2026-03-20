@@ -103,12 +103,35 @@ class KLIEPWeighter:
 
         old_log = self._log_diag_gaussian_mixture(embeddings, self._old_means, self._old_vars)
         new_log = self._log_diag_gaussian_mixture(embeddings, self._new_means, self._new_vars)
+        clip_min_log = math.log(max(self.clip_min, self.eps))
+        clip_max_log = math.log(max(self.clip_max, self.clip_min + self.eps))
         full_log = torch.logaddexp(
             old_log + self._old_prior_log,
             new_log + self._new_prior_log,
         )
-        ratio = torch.exp(full_log - new_log)
-        ratio = ratio / ratio.mean().clamp_min(self.eps)
+        log_ratio = torch.nan_to_num(
+            full_log - new_log,
+            nan=0.0,
+            posinf=clip_max_log,
+            neginf=clip_min_log,
+        ).clamp(min=clip_min_log, max=clip_max_log)
+        ratio = torch.exp(log_ratio)
+        ratio = torch.nan_to_num(
+            ratio,
+            nan=1.0,
+            posinf=self.clip_max,
+            neginf=self.clip_min,
+        ).clamp(min=self.clip_min, max=self.clip_max)
+        mean_ratio = ratio.mean()
+        if not torch.isfinite(mean_ratio) or float(mean_ratio.item()) <= 0.0:
+            return torch.ones(embeddings.size(0), device=embeddings.device, dtype=embeddings.dtype)
+        ratio = ratio / mean_ratio.clamp_min(self.eps)
+        ratio = torch.nan_to_num(
+            ratio,
+            nan=1.0,
+            posinf=self.clip_max,
+            neginf=self.clip_min,
+        )
         return ratio.clamp_(min=self.clip_min, max=self.clip_max)
 
     def _log_diag_gaussian_mixture(self, embeddings: Tensor, means: Tensor, vars_: Tensor) -> Tensor:

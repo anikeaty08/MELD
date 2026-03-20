@@ -29,3 +29,13 @@ def test_drift_detector_flags_critical_shift():
     drift = detector.detect(_snapshot(0.0), _snapshot(2.0))
     assert drift.shift_detected is True
     assert drift.severity == "critical"
+
+
+def test_drift_detector_returns_finite_score_for_nan_snapshot_values():
+    detector = KLManifoldDriftDetector(threshold=0.3)
+    before = _snapshot(0.0)
+    after = _snapshot(0.0)
+    after.class_means[0] = np.array([np.nan, 0.0])
+    drift = detector.detect(before, after)
+    assert np.isfinite(drift.shift_score)
+    assert drift.severity == "critical"

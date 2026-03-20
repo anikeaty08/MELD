@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -26,9 +27,9 @@ class KLManifoldDriftDetector(DriftDetector):
                 + (cov_before + (mu_before - mu_after) ** 2) / cov_after
                 - 1.0
             )
-            per_class_drift[class_id] = float(value)
+            per_class_drift[class_id] = _safe_detector_score(value, fallback=self.threshold * 3.0)
 
-        shift_score = float(np.mean(list(per_class_drift.values()))) if per_class_drift else 0.0
+        shift_score = _safe_detector_score(np.mean(list(per_class_drift.values())), fallback=self.threshold * 3.0) if per_class_drift else 0.0
         severity = _severity_from_ratio(shift_score / max(self.threshold, 1e-12))
         return DriftResult(
             shift_score=shift_score,
@@ -47,7 +48,7 @@ class MMDDriftDetector(DriftDetector):
     def detect(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> DriftResult:
         x = snapshot_before.input_feature_samples
         y = snapshot_after.input_feature_samples
-        score = self._mmd_rbf(x, y)
+        score = _safe_detector_score(self._mmd_rbf(x, y), fallback=self.threshold * 3.0)
         severity = _severity_from_ratio(score / max(self.threshold, 1e-12))
         return DriftResult(
             shift_score=score,
@@ -121,7 +122,7 @@ class PretrainingMMDDriftDetector:
         else:
             reference = reference[:sample_count]
             new_embeddings = new_embeddings[:sample_count]
-            score = self._mmd._mmd_rbf(reference, new_embeddings)
+            score = _safe_detector_score(self._mmd._mmd_rbf(reference, new_embeddings), fallback=self.threshold * 3.0)
         severity = _severity_from_ratio(score / max(self.threshold, 1e-12))
         return DriftResult(
             shift_score=float(score),
@@ -169,7 +170,7 @@ class CUSUMDriftDetector(DriftDetector):
                 np.mean(np.abs(snapshot_after.input_feature_mean - snapshot_before.input_feature_mean) / pooled)
             )
             self._accumulator = max(0.0, self._accumulator + standardized_shift - self.slack)
-            score = self._accumulator
+            score = _safe_detector_score(self._accumulator, fallback=self.threshold * 3.0)
         severity = _severity_from_ratio(score / max(self.threshold, 1e-12))
         return DriftResult(
             shift_score=score,
@@ -204,12 +205,12 @@ class CompositeDriftDetector(DriftDetector):
             cusum_result.shift_score / max(self.cusum.threshold, 1e-12),
         ]
         ratio = max(normalized)
-        composite_score = ratio * self.threshold
+        composite_score = _safe_detector_score(ratio * self.threshold, fallback=self.threshold * 3.0)
         severity = _severity_from_ratio(ratio)
         detector_scores = {
-            "kl_manifold": kl_result.shift_score,
-            "mmd_input": mmd_result.shift_score,
-            "cusum_input": cusum_result.shift_score,
+            "kl_manifold": _safe_detector_score(kl_result.shift_score, fallback=self.threshold * 3.0),
+            "mmd_input": _safe_detector_score(mmd_result.shift_score, fallback=self.threshold * 3.0),
+            "cusum_input": _safe_detector_score(cusum_result.shift_score, fallback=self.threshold * 3.0),
         }
         return DriftResult(
             shift_score=float(composite_score),
@@ -222,8 +223,17 @@ class CompositeDriftDetector(DriftDetector):
 
 
 def _severity_from_ratio(ratio: float) -> str:
+    if not math.isfinite(ratio):
+        return "critical"
     if ratio <= 1.0:
         return "none"
     if ratio <= 2.0:
         return "minor"
     return "critical"
+
+
+def _safe_detector_score(value: float | np.floating[Any], fallback: float) -> float:
+    score = float(value)
+    if not math.isfinite(score):
+        return float(fallback)
+    return score

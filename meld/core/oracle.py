@@ -21,6 +21,8 @@ class SpectralSafetyOracle(SafetyOracle):
             * float(train_config.lr)
             * math.sqrt(total_steps * snapshot.embedding_dim)
         )
+        if not math.isfinite(spectral):
+            spectral = 1e6
         if snapshot.mean_gradient_norm > 0.0:
             data_dependent = float(
                 snapshot.fisher_eigenvalue_max
@@ -28,6 +30,8 @@ class SpectralSafetyOracle(SafetyOracle):
                 * float(train_config.lr)
                 * total_steps
             )
+            if not math.isfinite(data_dependent):
+                data_dependent = spectral
             value = min(spectral, data_dependent)
         else:
             value = spectral
@@ -75,8 +79,12 @@ class SpectralSafetyOracle(SafetyOracle):
             denom = float(np.linalg.norm(before)) + 1e-12
             drifts.append(float(np.linalg.norm(after - before) / denom))
         value = float(np.mean(drifts))
+        if not math.isfinite(value):
+            value = 1e6
         if self._last_pre_risk_estimate is not None and self._last_pre_risk_estimate.value > 0.0:
             ratio = value / self._last_pre_risk_estimate.value
+            if not math.isfinite(ratio):
+                ratio = 1.0
             self._calibration_history.append(float(np.clip(ratio, 0.05, 1.0)))
             self._calibration_history = self._calibration_history[-32:]
         return OracleEstimate(
@@ -117,6 +125,8 @@ class SpectralSafetyOracle(SafetyOracle):
             )
         pac_term = math.sqrt(math.log(1.0 / clipped_delta) / (2.0 * n))
         value = float(iw_term + curvature_term + pac_term)
+        if not math.isfinite(value):
+            value = 1e6
         return OracleEstimate(
             value=value,
             bound_type="pac_importance_weighted",
@@ -160,4 +170,7 @@ class SpectralSafetyOracle(SafetyOracle):
         for before, after in zip(snapshot_before.parameter_reference, snapshot_after.parameter_reference):
             delta = np.asarray(after, dtype=np.float64) - np.asarray(before, dtype=np.float64)
             total += float(np.sum(delta * delta))
-        return float(math.sqrt(total))
+        value = float(math.sqrt(total))
+        if not math.isfinite(value):
+            return 1e6
+        return value

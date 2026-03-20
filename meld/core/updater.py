@@ -94,6 +94,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         kd_temp = float(getattr(config, "kd_temperature", 2.0))
         geo_dec = float(getattr(config, "geometry_decay", 0.3))
         cutmix_alpha = float(getattr(config, "cutmix_alpha", 0.0))
+        max_grad_norm = float(getattr(config, "max_grad_norm", 0.5))
         enable_importance_weighting = bool(getattr(config, "enable_importance_weighting", True))
 
         # Optional training stabilizers (all configurable via attributes on `config`).
@@ -218,7 +219,10 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             model.train()
             if snapshot is not None and bool(getattr(config, "freeze_bn_stats", True)):
                 model.apply(_freeze_batch_norm_stats)
-            decay = geo_dec / (1.0 + max(snapshot.fisher_eigenvalue_max if snapshot else 0, 1e-6) * 100.0)
+            fisher_scale = snapshot.fisher_eigenvalue_max if snapshot is not None else 0.0
+            if not math.isfinite(float(fisher_scale)):
+                fisher_scale = 0.0
+            decay = geo_dec / (1.0 + max(float(fisher_scale), 1e-6) * 100.0)
             lam_g = lam_geo * math.exp(-decay * epoch)
             lambda_schedule.append(lam_g)
 
@@ -244,10 +248,16 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
 
                 ce_terms = lam_m * criterion(logits, ta) + (1 - lam_m) * criterion(logits, tb)
                 if use_importance_weighting:
-                    sample_weights = self.weighter.score(embeddings).detach()
+                    sample_weights = torch.nan_to_num(
+                        self.weighter.score(embeddings).detach(),
+                        nan=1.0,
+                        posinf=20.0,
+                        neginf=0.05,
+                    )
                     ce = (sample_weights * ce_terms).mean()
                 else:
                     ce = ce_terms.mean()
+                ce = torch.nan_to_num(ce, nan=0.0, posinf=1e4, neginf=0.0)
                 preds = logits.argmax(dim=1)
                 correct += int((preds == targets).sum().item())
                 seen += int(targets.numel())
@@ -260,9 +270,14 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                         cached_geo = self._geometry_loss(model, snapshot, device, embeddings.dtype, lam_kd, kd_temp)
                     geo = cached_geo if bidx % self.geometry_refresh_interval == 0 else cached_geo.detach()
                     ewc = self._ewc_loss(ewc_params, ewc_param_names, reference, fisher_splits, snapshot) * lam_ewc
+                    geo = torch.nan_to_num(geo, nan=0.0, posinf=1e4, neginf=0.0)
+                    ewc = torch.nan_to_num(ewc, nan=0.0, posinf=1e4, neginf=0.0)
 
                 reg_loss = lam_g * geo + ewc
                 total_loss = ce + reg_loss
+                if not torch.isfinite(total_loss):
+                    loss_hist.append(float("nan"))
+                    continue
 
                 optimizer.zero_grad(set_to_none=True)
 
@@ -295,7 +310,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                     total_loss.backward()
                 total_steps += 1
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
                 optimizer.step()
                 scheduler.step()
 
@@ -406,6 +421,8 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             anchors = torch.from_numpy(anch_np).to(device=device, dtype=dtype)
             teacher_logits = torch.from_numpy(logit_np).to(device=device, dtype=dtype)
             current_logits = model.classifier(anchors).index_select(1, old_class_ids)
+            current_logits = torch.nan_to_num(current_logits, nan=0.0, posinf=1e4, neginf=-1e4)
+            teacher_logits = torch.nan_to_num(teacher_logits, nan=0.0, posinf=1e4, neginf=-1e4)
             anchor_kd = _kd_loss(current_logits, teacher_logits, kd_temp)
 
             mean = torch.from_numpy(snapshot.class_means[cid]).to(device=device, dtype=dtype)
@@ -421,11 +438,25 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             ) * std.unsqueeze(0)
             teacher_gaussian_logits = F.linear(gaussian_samples, teacher_weight, teacher_bias)
             current_gaussian_logits = model.classifier(gaussian_samples).index_select(1, old_class_ids)
+            teacher_gaussian_logits = torch.nan_to_num(
+                teacher_gaussian_logits,
+                nan=0.0,
+                posinf=1e4,
+                neginf=-1e4,
+            )
+            current_gaussian_logits = torch.nan_to_num(
+                current_gaussian_logits,
+                nan=0.0,
+                posinf=1e4,
+                neginf=-1e4,
+            )
             gaussian_kd = _kd_loss(current_gaussian_logits, teacher_gaussian_logits, kd_temp)
 
             losses.append((anchor_kd + gaussian_kd) * lambda_kd)
 
-        return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
+        if not losses:
+            return torch.tensor(0.0, device=device)
+        return torch.nan_to_num(torch.stack(losses).mean(), nan=0.0, posinf=1e4, neginf=0.0)
 
     def _ewc_loss(
         self,
@@ -446,13 +477,15 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         for p, name, ref, f in zip(params, param_names, reference, fisher_splits):
             if name in kfac_param_names and name in kfac_A and name in kfac_G:
                 # K-FAC quadratic form: Tr(G dW A dW^T)
-                A = torch.from_numpy(kfac_A[name]).to(device=p.device)
-                G = torch.from_numpy(kfac_G[name]).to(device=p.device)
-                dW = p - ref
+                A = torch.nan_to_num(torch.from_numpy(kfac_A[name]).to(device=p.device), nan=0.0, posinf=1e4, neginf=0.0)
+                G = torch.nan_to_num(torch.from_numpy(kfac_G[name]).to(device=p.device), nan=0.0, posinf=1e4, neginf=0.0)
+                dW = torch.nan_to_num(p - ref, nan=0.0, posinf=1e4, neginf=-1e4)
                 pen = pen + (G @ dW @ A * dW).sum()
             else:
-                pen = pen + (f * (p - ref).pow(2)).sum()
-        return pen
+                delta = torch.nan_to_num(p - ref, nan=0.0, posinf=1e4, neginf=-1e4)
+                fisher = torch.nan_to_num(f, nan=0.0, posinf=1e4, neginf=0.0)
+                pen = pen + (fisher * delta.pow(2)).sum()
+        return torch.nan_to_num(pen, nan=0.0, posinf=1e4, neginf=0.0)
 
 
 def _freeze_batch_norm_stats(module: nn.Module) -> None:
@@ -477,6 +510,7 @@ class FullRetrainUpdater(ManifoldUpdater):
         device = next(model.parameters()).device
         epochs = int(config.epochs)
         lr = float(config.lr)
+        max_grad_norm = float(getattr(config, "max_grad_norm", 0.5))
 
         optimizer = torch.optim.SGD(
             model.parameters(),
@@ -523,7 +557,7 @@ class FullRetrainUpdater(ManifoldUpdater):
                 seen += int(targets.numel())
                 ce.backward()
 
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
                 optimizer.step()
                 scheduler.step()
 

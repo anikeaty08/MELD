@@ -38,6 +38,7 @@ class TrainConfig:
     enable_importance_weighting: bool = True
     label_smoothing: float = 0.0
     cutmix_alpha: float = 0.0
+    max_grad_norm: float = 0.5
     use_imprinting: bool = True
     imprinting_max_samples_per_class: int = 64
     auto_scale_safe_update: bool = True

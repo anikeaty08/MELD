@@ -56,6 +56,23 @@ def test_kliep_weighter_returns_bounded_weights():
     assert 0.8 <= float(weights.mean().item()) <= 1.2
 
 
+def test_kliep_weighter_stays_finite_for_extreme_embeddings():
+    weighter = KLIEPWeighter()
+    snapshot = _snapshot(0.0)
+    fit_embeddings = torch.tensor(
+        [[0.1, 0.0], [0.2, 0.1], [0.3, -0.1]],
+        dtype=torch.float32,
+    )
+    fit_targets = torch.tensor([1, 1, 1], dtype=torch.long)
+    weighter.fit(fit_embeddings, snapshot, fit_targets)
+    extreme_embeddings = torch.tensor(
+        [[1e4, -1e4], [5e3, 5e3], [-8e3, 2e3]],
+        dtype=torch.float32,
+    )
+    weights = weighter.score(extreme_embeddings)
+    assert torch.isfinite(weights).all()
+
+
 def test_composite_drift_detector_catches_input_shift():
     detector = CompositeDriftDetector(threshold=0.3, mmd_threshold=0.01, cusum_threshold=0.05)
     drift = detector.detect(_snapshot(0.0, input_shift=0.0), _snapshot(0.0, input_shift=2.0))

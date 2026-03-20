@@ -89,10 +89,17 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             logits_list = class_logits.get(class_id, [])
             if not vectors_list or not logits_list:
                 continue
-            vectors = np.stack(vectors_list, axis=0)
-            logits = np.stack(logits_list, axis=0)
-            class_means[class_id] = vectors.mean(axis=0)
-            class_covs[class_id] = vectors.var(axis=0) + self.covariance_eps
+            vectors = np.nan_to_num(np.stack(vectors_list, axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
+            logits = np.nan_to_num(np.stack(logits_list, axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
+            class_means[class_id] = np.nan_to_num(vectors.mean(axis=0), nan=0.0, posinf=1e6, neginf=-1e6).astype(
+                np.float32,
+                copy=False,
+            )
+            class_covs[class_id] = np.clip(
+                np.nan_to_num(vectors.var(axis=0), nan=0.0, posinf=1e6, neginf=0.0) + self.covariance_eps,
+                self.covariance_eps,
+                1e6,
+            ).astype(np.float32, copy=False)
             anchor_count = min(self.anchors_per_class, len(vectors))
             if anchor_count > 0:
                 indices = np.linspace(0, len(vectors) - 1, num=anchor_count, dtype=int)
@@ -113,12 +120,21 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         }
         if input_feature_batches:
             input_features = np.concatenate(input_feature_batches, axis=0).astype(np.float32, copy=False)
-            input_feature_mean = input_features.mean(axis=0)
-            input_feature_var = input_features.var(axis=0) + self.covariance_eps
+            input_feature_mean = np.nan_to_num(input_features.mean(axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
+            input_feature_var = np.clip(
+                np.nan_to_num(input_features.var(axis=0), nan=0.0, posinf=1e6, neginf=0.0) + self.covariance_eps,
+                self.covariance_eps,
+                1e6,
+            )
             sample_count = min(self.input_feature_samples, len(input_features))
             if sample_count > 0:
                 indices = np.linspace(0, len(input_features) - 1, num=sample_count, dtype=int)
-                input_feature_samples = input_features[indices]
+                input_feature_samples = np.nan_to_num(
+                    input_features[indices],
+                    nan=0.0,
+                    posinf=1e6,
+                    neginf=-1e6,
+                ).astype(np.float32, copy=False)
             else:
                 input_feature_samples = np.empty((0, 0), dtype=np.float32)
         else:
@@ -140,9 +156,22 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             kfac_factors_G,
             kfac_eig_max,
         ) = self._compute_fisher(model, dataloader, fisher_samples, protected_parameter_names)
+        fisher_diagonal = np.clip(
+            np.nan_to_num(fisher_diagonal, nan=0.0, posinf=1e6, neginf=0.0),
+            0.0,
+            1e6,
+        ).astype(np.float32, copy=False)
         if self._ema_fisher is not None and self._ema_fisher.shape == fisher_diagonal.shape:
             fisher_diagonal = self._ema_decay * self._ema_fisher + (1.0 - self._ema_decay) * fisher_diagonal
-        self._ema_fisher = fisher_diagonal.copy()
+        fisher_diagonal = np.clip(
+            np.nan_to_num(fisher_diagonal, nan=0.0, posinf=1e6, neginf=0.0),
+            0.0,
+            1e6,
+        ).astype(np.float32, copy=False)
+        mean_gradient_norm = float(np.nan_to_num(mean_gradient_norm, nan=0.0, posinf=1e6, neginf=0.0))
+        kfac_eig_max = float(np.nan_to_num(kfac_eig_max, nan=0.0, posinf=1e6, neginf=0.0))
+        if np.isfinite(fisher_diagonal).all():
+            self._ema_fisher = fisher_diagonal.copy()
         parameter_reference = [
             param.detach().cpu().numpy().copy()
             for name, param in model.named_parameters()
@@ -262,18 +291,25 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                     targets = targets[:remaining]
 
                 model.zero_grad(set_to_none=True)
-                logits = model(inputs)
+                logits = torch.nan_to_num(model(inputs), nan=0.0, posinf=1e4, neginf=-1e4)
                 loss = criterion(logits, targets)
+                if not torch.isfinite(loss):
+                    continue
                 loss.backward()
 
                 batch_size = inputs.size(0)
                 for index, param in enumerate(params):
                     if param.grad is None:
                         continue
-                    fisher[index] += param.grad.detach().pow(2) * batch_size
+                    grad = torch.nan_to_num(param.grad.detach(), nan=0.0, posinf=1e3, neginf=-1e3)
+                    fisher[index] += grad.pow(2) * batch_size
 
                 # Mean grad norm proxy (used for oracle calibration).
-                per_param_norms = [param.grad.detach().pow(2).sum() for param in params if param.grad is not None]
+                per_param_norms = [
+                    torch.nan_to_num(param.grad.detach(), nan=0.0, posinf=1e3, neginf=-1e3).pow(2).sum()
+                    for param in params
+                    if param.grad is not None
+                ]
                 if per_param_norms:
                     grad_norm = torch.sqrt(torch.stack(per_param_norms).sum())
                     grad_norms.append(float(grad_norm.item()))
@@ -285,6 +321,8 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                         g = grad_outputs.get(pname)
                         if a is None or g is None:
                             continue
+                        a = torch.nan_to_num(a, nan=0.0, posinf=1e3, neginf=-1e3)
+                        g = torch.nan_to_num(g, nan=0.0, posinf=1e3, neginf=-1e3)
                         A_acc[pname] += a.t() @ a
                         G_acc[pname] += g.t() @ g
 
@@ -297,8 +335,12 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             return np.array([], dtype=np.float32), 0.0, [], {}, {}, 0.0
 
         flat = torch.cat([(entry / total).reshape(-1) for entry in fisher])
-        fisher_np = flat.detach().cpu().numpy()
-        mean_grad_norm = float(np.mean(grad_norms)) if grad_norms else 0.0
+        fisher_np = np.clip(
+            np.nan_to_num(flat.detach().cpu().numpy(), nan=0.0, posinf=1e6, neginf=0.0),
+            0.0,
+            1e6,
+        ).astype(np.float32, copy=False)
+        mean_grad_norm = float(np.nan_to_num(np.mean(grad_norms), nan=0.0, posinf=1e6, neginf=0.0)) if grad_norms else 0.0
 
         kfac_A_np: dict[str, np.ndarray] = {}
         kfac_G_np: dict[str, np.ndarray] = {}

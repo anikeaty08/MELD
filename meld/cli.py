@@ -32,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analytic-ridge", type=float, default=1e-3)
     parser.add_argument("--label-smoothing", type=float, default=0.0)
     parser.add_argument("--cutmix-alpha", type=float, default=0.0)
+    parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--fisher-samples", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--prefer-cuda", action="store_true")
@@ -66,6 +67,7 @@ def main() -> None:
             analytic_ridge=args.analytic_ridge,
             label_smoothing=args.label_smoothing,
             cutmix_alpha=args.cutmix_alpha,
+            max_grad_norm=args.max_grad_norm,
             num_workers=args.num_workers,
         ),
     )
