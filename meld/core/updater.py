@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import random
 import time
 
 import torch
@@ -12,22 +11,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader, Subset
 
 from ..interfaces.base import ManifoldUpdater, TaskSnapshot, TrainArtifacts
-
-
-def _gaussian_kl_diag(
-    mean_before: Tensor,
-    var_before: Tensor,
-    mean_after: Tensor,
-    var_after: Tensor,
-) -> Tensor:
-    safe_after  = torch.clamp(var_after,  min=1e-6)
-    safe_before = torch.clamp(var_before, min=1e-6)
-    term = (
-        torch.log(safe_after / safe_before)
-        + (safe_before + (mean_before - mean_after).pow(2)) / safe_after
-        - 1.0
-    )
-    return 0.5 * term.sum()
+from .weighter import KLIEPWeighter
 
 
 def _kd_loss(student_logits: Tensor, teacher_logits: Tensor, temperature: float = 2.0) -> Tensor:
@@ -84,8 +68,15 @@ def _cutmix(x: Tensor, y: Tensor, alpha: float = 1.0) -> tuple[Tensor, Tensor, T
 
 
 class GeometryConstrainedUpdater(ManifoldUpdater):
-    def __init__(self, geometry_refresh_interval: int = 50) -> None:
+    def __init__(
+        self,
+        geometry_refresh_interval: int = 50,
+        manifold_samples_per_class: int = 8,
+        weighter: KLIEPWeighter | None = None,
+    ) -> None:
         self.geometry_refresh_interval = geometry_refresh_interval
+        self.manifold_samples_per_class = manifold_samples_per_class
+        self.weighter = weighter or KLIEPWeighter()
 
     def update(
         self,
@@ -102,6 +93,8 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         lam_kd = float(getattr(config, "lambda_kd", 1.0))
         kd_temp = float(getattr(config, "kd_temperature", 2.0))
         geo_dec = float(getattr(config, "geometry_decay", 0.3))
+        cutmix_alpha = float(getattr(config, "cutmix_alpha", 0.0))
+        enable_importance_weighting = bool(getattr(config, "enable_importance_weighting", True))
 
         # Optional training stabilizers (all configurable via attributes on `config`).
         # If not provided, enable early stopping with conservative defaults.
@@ -131,7 +124,10 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         )
 
         # Label smoothing CE — reduces overconfidence.
-        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+        criterion = nn.CrossEntropyLoss(
+            label_smoothing=float(getattr(config, "label_smoothing", 0.0)),
+            reduction="none",
+        )
 
         # EWC setup (diagonal Fisher for EWC fallback; K-FAC is used inside `_ewc_loss`).
         if snapshot is not None and snapshot.parameter_reference:
@@ -141,11 +137,18 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             reference, fisher = [], torch.empty(0, device=device)
 
         named_params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
-        param_names = [n for n, _ in named_params]
         params = [p for _, p in named_params]
+        protected_names = set(snapshot.protected_parameter_names) if snapshot is not None else set()
+        ewc_named_params = [
+            (name, param)
+            for name, param in named_params
+            if not protected_names or name in protected_names
+        ]
+        ewc_param_names = [name for name, _ in ewc_named_params]
+        ewc_params = [param for _, param in ewc_named_params]
         fisher_splits: list[Tensor] = []
         cursor = 0
-        for p in params:
+        for p in ewc_params:
             n = p.numel()
             fisher_splits.append(
                 fisher[cursor : cursor + n].view_as(p) if fisher.numel() else torch.zeros_like(p)
@@ -162,8 +165,11 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 val_size = max(1, int(ds_len * val_fraction))
                 train_size = ds_len - val_size
                 if train_size > 0:
-                    train_idx = list(range(train_size))
-                    val_idx = list(range(train_size, ds_len))
+                    generator = torch.Generator()
+                    generator.manual_seed(int(getattr(config, "seed", 0)))
+                    permutation = torch.randperm(ds_len, generator=generator).tolist()
+                    train_idx = permutation[:train_size]
+                    val_idx = permutation[train_size:]
                     train_ds = Subset(ds, train_idx)
                     val_ds = Subset(ds, val_idx)
                     train_loader = DataLoader(
@@ -171,12 +177,16 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                         batch_size=new_data_loader.batch_size,
                         shuffle=True,
                         num_workers=new_data_loader.num_workers,
+                        pin_memory=bool(getattr(new_data_loader, "pin_memory", False)),
+                        persistent_workers=bool(new_data_loader.num_workers > 0),
                     )
                     val_loader = DataLoader(
                         val_ds,
                         batch_size=new_data_loader.batch_size,
                         shuffle=False,
                         num_workers=new_data_loader.num_workers,
+                        pin_memory=bool(getattr(new_data_loader, "pin_memory", False)),
+                        persistent_workers=bool(new_data_loader.num_workers > 0),
                     )
                     steps_per_epoch = max(1, len(train_loader))
                     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -200,9 +210,14 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         best_val = float("inf")
         bad_epochs = 0
         epochs_run = 0
+        use_importance_weighting = snapshot is not None and enable_importance_weighting
+        if use_importance_weighting:
+            self._fit_importance_weighter(model, new_data_loader, snapshot, device)
 
         for epoch in range(epochs):
             model.train()
+            if snapshot is not None and bool(getattr(config, "freeze_bn_stats", True)):
+                model.apply(_freeze_batch_norm_stats)
             decay = geo_dec / (1.0 + max(snapshot.fisher_eigenvalue_max if snapshot else 0, 1e-6) * 100.0)
             lam_g = lam_geo * math.exp(-decay * epoch)
             lambda_schedule.append(lam_g)
@@ -217,16 +232,22 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 inputs = inputs.to(device)
                 targets = targets.to(device)
 
-                # Mixup on task 0 (snapshot is None), CutMix afterwards.
+                # Task 0 should learn the base classes cleanly; replay-free
+                # regularization starts from later tasks.
                 if snapshot is None:
-                    inputs, ta, tb, lam_m = _mixup(inputs, targets, alpha=0.2)
+                    inputs, ta, tb, lam_m = _mixup(inputs, targets, alpha=0.0)
                 else:
-                    inputs, ta, tb, lam_m = _cutmix(inputs, targets, alpha=1.0)
+                    inputs, ta, tb, lam_m = _cutmix(inputs, targets, alpha=cutmix_alpha)
 
                 embeddings = model.embed(inputs)
                 logits = model.classifier(embeddings)
 
-                ce = lam_m * criterion(logits, ta) + (1 - lam_m) * criterion(logits, tb)
+                ce_terms = lam_m * criterion(logits, ta) + (1 - lam_m) * criterion(logits, tb)
+                if use_importance_weighting:
+                    sample_weights = self.weighter.score(embeddings).detach()
+                    ce = (sample_weights * ce_terms).mean()
+                else:
+                    ce = ce_terms.mean()
                 preds = logits.argmax(dim=1)
                 correct += int((preds == targets).sum().item())
                 seen += int(targets.numel())
@@ -238,7 +259,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                     if bidx % self.geometry_refresh_interval == 0:
                         cached_geo = self._geometry_loss(model, snapshot, device, embeddings.dtype, lam_kd, kd_temp)
                     geo = cached_geo if bidx % self.geometry_refresh_interval == 0 else cached_geo.detach()
-                    ewc = self._ewc_loss(params, param_names, reference, fisher_splits, snapshot) * lam_ewc
+                    ewc = self._ewc_loss(ewc_params, ewc_param_names, reference, fisher_splits, snapshot) * lam_ewc
 
                 reg_loss = lam_g * geo + ewc
                 total_loss = ce + reg_loss
@@ -248,6 +269,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 if enable_grad_projection and reg_loss.requires_grad:
                     ce_grads = torch.autograd.grad(ce, params, retain_graph=True, allow_unused=True)
                     reg_grads = torch.autograd.grad(reg_loss, params, retain_graph=False, allow_unused=True)
+                    projected_this_step = False
 
                     # PCGrad-style projection: if gradients conflict, project reg away from ce.
                     for p, gce, grec in zip(params, ce_grads, reg_grads):
@@ -261,12 +283,14 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                             continue
                         dot = (gce * grec).sum()
                         if dot.item() < 0:
-                            projected_steps += 1
+                            projected_this_step = True
                             gce_norm2 = (gce * gce).sum() + 1e-12
                             grec_proj = grec - (dot / gce_norm2) * gce
                             p.grad = gce + grec_proj
                         else:
                             p.grad = gce + grec
+                    if projected_this_step:
+                        projected_steps += 1
                 else:
                     total_loss.backward()
                 total_steps += 1
@@ -298,7 +322,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                         targets = targets.to(device)
                         embeddings = model.embed(inputs)
                         logits = model.classifier(embeddings)
-                        vloss = criterion(logits, targets)
+                        vloss = criterion(logits, targets).mean()
                         val_loss_sum += float(vloss.item())
                         val_n += 1
                 val_loss = val_loss_sum / max(1, val_n)
@@ -323,6 +347,28 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             loss_history=loss_hist,
         )
 
+    def _fit_importance_weighter(
+        self,
+        model: nn.Module,
+        new_data_loader: DataLoader,
+        snapshot: TaskSnapshot,
+        device: torch.device,
+    ) -> None:
+        model.eval()
+        embeddings_all: list[Tensor] = []
+        targets_all: list[Tensor] = []
+        with torch.no_grad():
+            for inputs, targets in new_data_loader:
+                inputs = inputs.to(device)
+                embeddings_all.append(model.embed(inputs))
+                targets_all.append(targets.to(device))
+        if not embeddings_all:
+            snapshot.importance_weights = {}
+            return
+        embeddings = torch.cat(embeddings_all, dim=0)
+        targets = torch.cat(targets_all, dim=0)
+        snapshot.importance_weights = self.weighter.fit(embeddings, snapshot, targets)
+
     def _geometry_loss(
         self,
         model: nn.Module,
@@ -332,31 +378,52 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         lambda_kd: float,
         kd_temp: float,
     ) -> Tensor:
-        # Zero-replay: operate purely on stored anchor embeddings/logits.
-        # Gradients flow through the classifier head via KD; the Gaussian stats
-        # term is constant (anchors come from stored snapshot).
         losses: list[Tensor] = []
+        if not snapshot.class_ids:
+            return torch.tensor(0.0, device=device)
+
+        old_class_ids = torch.tensor(snapshot.class_ids, device=device, dtype=torch.long)
+        teacher_weight = torch.stack(
+            [
+                torch.from_numpy(snapshot.classifier_weights[cid]).to(device=device, dtype=dtype)
+                for cid in snapshot.class_ids
+                if cid in snapshot.classifier_weights
+            ],
+            dim=0,
+        ) if snapshot.classifier_weights else torch.empty(0, device=device, dtype=dtype)
+        teacher_bias = torch.tensor(
+            [snapshot.classifier_biases[cid] for cid in snapshot.class_ids if cid in snapshot.classifier_biases],
+            device=device,
+            dtype=dtype,
+        ) if snapshot.classifier_biases else torch.empty(0, device=device, dtype=dtype)
+
         for cid in snapshot.class_ids:
             anch_np = snapshot.class_anchors.get(cid)
             logit_np = snapshot.class_anchor_logits.get(cid)
-            if anch_np is None or logit_np is None or len(anch_np) == 0:
+            if anch_np is None or logit_np is None or len(anch_np) == 0 or teacher_weight.numel() == 0:
                 continue
 
             anchors = torch.from_numpy(anch_np).to(device=device, dtype=dtype)
             teacher_logits = torch.from_numpy(logit_np).to(device=device, dtype=dtype)
+            current_logits = model.classifier(anchors).index_select(1, old_class_ids)
+            anchor_kd = _kd_loss(current_logits, teacher_logits, kd_temp)
 
-            # Distill the classifier head towards stored anchor behavior.
-            current_logits = model.classifier(anchors)
-            kd = _kd_loss(current_logits, teacher_logits, kd_temp) * lambda_kd
+            mean = torch.from_numpy(snapshot.class_means[cid]).to(device=device, dtype=dtype)
+            std = torch.sqrt(
+                torch.from_numpy(snapshot.class_covs[cid]).to(device=device, dtype=dtype).clamp_min(1e-6)
+            )
+            sample_count = max(1, min(self.manifold_samples_per_class, anchors.size(0)))
+            gaussian_samples = mean.unsqueeze(0) + torch.randn(
+                sample_count,
+                mean.numel(),
+                device=device,
+                dtype=dtype,
+            ) * std.unsqueeze(0)
+            teacher_gaussian_logits = F.linear(gaussian_samples, teacher_weight, teacher_bias)
+            current_gaussian_logits = model.classifier(gaussian_samples).index_select(1, old_class_ids)
+            gaussian_kd = _kd_loss(current_gaussian_logits, teacher_gaussian_logits, kd_temp)
 
-            # Optional geometry proxy in embedding space (constant w.r.t. model).
-            before_mean = torch.from_numpy(snapshot.class_means[cid]).to(device=device, dtype=dtype)
-            before_var = torch.from_numpy(snapshot.class_covs[cid]).to(device=device, dtype=dtype)
-            anchor_mean = anchors.mean(dim=0)
-            anchor_var = anchors.var(dim=0, unbiased=False) + 1e-6
-            stats = _gaussian_kl_diag(before_mean, before_var, anchor_mean, anchor_var)
-
-            losses.append(stats + kd)
+            losses.append((anchor_kd + gaussian_kd) * lambda_kd)
 
         return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=device)
 
@@ -368,7 +435,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         fisher_splits: list[Tensor],
         snapshot: TaskSnapshot,
     ) -> Tensor:
-        if not reference:
+        if not reference or not params:
             return torch.tensor(0.0, device=params[0].device if params else "cpu")
         pen = torch.tensor(0.0, device=params[0].device)
 
@@ -386,6 +453,11 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             else:
                 pen = pen + (f * (p - ref).pow(2)).sum()
         return pen
+
+
+def _freeze_batch_norm_stats(module: nn.Module) -> None:
+    if isinstance(module, nn.modules.batchnorm._BatchNorm):
+        module.eval()
 
 
 class FullRetrainUpdater(ManifoldUpdater):
@@ -425,8 +497,7 @@ class FullRetrainUpdater(ManifoldUpdater):
             final_div_factor=1e4,
         )
 
-        # Plain CE: no label smoothing.
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(label_smoothing=float(getattr(config, "label_smoothing", 0.0)))
 
         start = time.time()
         ce_hist: list[float] = []

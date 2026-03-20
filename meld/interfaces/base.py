@@ -26,6 +26,15 @@ class TaskSnapshot:
     dataset_size: int
     steps_per_epoch: int
     parameter_reference: list[np.ndarray] = field(default_factory=list)
+    protected_parameter_names: list[str] = field(default_factory=list)
+    classifier_weights: dict[int, np.ndarray] = field(default_factory=dict)
+    classifier_biases: dict[int, float] = field(default_factory=dict)
+    importance_weights: dict[int, np.ndarray] = field(default_factory=dict)
+    input_feature_mean: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float32))
+    input_feature_var: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float32))
+    input_feature_samples: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 0), dtype=np.float32)
+    )
     # Kronecker-factored curvature for a small subset of parameters (weights
     # only). Used to replace diagonal Fisher for the selected parameters.
     kfac_weight_param_names: list[str] = field(default_factory=list)
@@ -39,6 +48,8 @@ class DriftResult:
     shift_detected: bool
     per_class_drift: dict[int, float]
     severity: str
+    detector_scores: dict[str, float] = field(default_factory=dict)
+    input_shift_score: float = 0.0
 
 
 @dataclass(slots=True)

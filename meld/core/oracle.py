@@ -43,3 +43,20 @@ class SpectralSafetyOracle(SafetyOracle):
             self._calibration_history.append(min(1.0, value / self._last_pre_bound))
             self._calibration_history = self._calibration_history[-32:]
         return value
+
+    def pac_equivalence_gap(self, confidence: float = 0.95) -> tuple[float, float]:
+        """Return an empirical PAC-style summary from observed bound tightness.
+
+        This is a calibrated reporting utility, not a formal Rademacher-style
+        theorem. `epsilon` is the confidence-quantile scaled bound and `delta`
+        is the remaining tail probability.
+        """
+
+        delta = float(np.clip(1.0 - confidence, 1e-6, 1.0))
+        if self._last_pre_bound is None:
+            return 0.0, delta
+        if not self._calibration_history:
+            return float(self._last_pre_bound), delta
+        quantile = float(np.quantile(np.asarray(self._calibration_history), np.clip(confidence, 0.0, 1.0)))
+        epsilon = float(self._last_pre_bound * max(1.0, quantile))
+        return epsilon, delta

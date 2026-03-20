@@ -9,21 +9,23 @@ import time
 import functools
 from dataclasses import asdict, replace
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, TensorDataset
 
 from ..core.auto_config import derive_train_config
 from ..core.corrector import AnalyticNormCorrector
-from ..core.drift import KLManifoldDriftDetector
+from ..core.drift import CompositeDriftDetector, KLManifoldDriftDetector
 from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
 from ..core.updater import FullRetrainUpdater, GeometryConstrainedUpdater
-from ..interfaces.base import Decision, DriftResult, TaskSnapshot, TrainArtifacts
+from ..interfaces.base import Decision, DriftDetector, DriftResult, TaskSnapshot, TrainArtifacts
 from ..modeling import MELDModel
 from ..models.backbone import resnet20, resnet32, resnet44, resnet56
 from ..models.classifier import IncrementalClassifier
@@ -33,6 +35,7 @@ from .metrics import (
     compute_equivalence_gap,
     compute_ece_maybe,
 )
+from .storage import ResultStore
 from .robustness import evaluate_cifar_c
 from .avalanche_baselines import run_avalanche_baselines
 
@@ -84,7 +87,7 @@ class BenchmarkRunner:
         safety_oracle: SpectralSafetyOracle | None = None,
         updater: GeometryConstrainedUpdater | None = None,
         corrector: AnalyticNormCorrector | None = None,
-        drift_detector: KLManifoldDriftDetector | None = None,
+        drift_detector: DriftDetector | None = None,
         deploy_policy: FourStateDeployPolicy | None = None,
     ) -> None:
         self.config = config
@@ -93,7 +96,7 @@ class BenchmarkRunner:
         self.updater = updater or GeometryConstrainedUpdater()
         self.full_retrain_updater = FullRetrainUpdater()
         self.corrector = corrector or AnalyticNormCorrector()
-        self.drift_detector = drift_detector or KLManifoldDriftDetector(config.shift_threshold)
+        self.drift_detector = drift_detector or CompositeDriftDetector(config.shift_threshold)
         self.deploy_policy = deploy_policy or FourStateDeployPolicy()
         if config.prefer_cuda and torch.cuda.is_available():
             self.device = torch.device("cuda")
@@ -102,6 +105,9 @@ class BenchmarkRunner:
         else:
             self.device = torch.device("cpu")
         self._baseline_model_cache: MELDModel | None = None
+        self._loader_num_workers = self._effective_num_workers()
+        self._pin_memory = self.device.type == "cuda"
+        self._result_store = ResultStore(getattr(config, "database_path", None))
 
     def run(self, results_path: str | Path | None = None) -> dict[str, Any]:
         self._seed_everything(int(self.config.seed))
@@ -116,6 +122,7 @@ class BenchmarkRunner:
         delta_acc_after_task: list[float] = [0.0 for _ in range(num_tasks_run)]
         delta_best_acc: list[float] = [0.0 for _ in range(num_tasks_run)]
         results: dict[str, Any] = {
+            "run_id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"),
             "status": "running",
             "config": self._config_dict(),
             "tasks": [],
@@ -128,6 +135,10 @@ class BenchmarkRunner:
         for task_id, task_loader in enumerate(tasks):
             all_seen_loaders.append(task_loader)
             new_class_ids = model.classifier.adaption(self.config.classes_per_task)
+            if bool(getattr(self.config.train, "use_imprinting", True)) and (
+                task_id > 0 or bool(getattr(self.config.train, "pretrained_backbone", False))
+            ):
+                self._imprint_new_head(model, task_loader, new_class_ids)
             forward_transfer_top1: float | None = None
             if task_id > 0:
                 # Zero-shot forward transfer: evaluate before any delta training.
@@ -160,7 +171,12 @@ class BenchmarkRunner:
                     )
                 else:
                     task_train_config = self.config.train
-                pre_bound = self.safety_oracle.pre_bound(snapshot_before, self.config.train)
+                pre_bound = self.safety_oracle.pre_bound(snapshot_before, task_train_config)
+                task_train_config, pre_bound = self._make_safe_train_config(
+                    snapshot_before,
+                    task_train_config,
+                    pre_bound,
+                )
             else:
                 task_train_config = self.config.train
 
@@ -419,20 +435,22 @@ class BenchmarkRunner:
 
         results["status"] = "completed"
         results["final_summary"] = self._summarize(results["tasks"])
-        try:
-            results["robustness"] = evaluate_cifar_c(
-                model,
-                dataset=self.config.dataset,
-                data_root=self.config.data_root,
+        if bool(getattr(self.config, "run_robustness_eval", False)):
+            try:
+                results["robustness"] = evaluate_cifar_c(
+                    model,
+                    dataset=self.config.dataset,
+                    data_root=self.config.data_root,
+                    device=self.device,
+                    batch_size=self.config.train.batch_size,
+                )
+            except Exception as exc:
+                results["robustness"] = {"status": "skipped", "reason": f"Robustness eval failed: {exc}"}
+        if bool(getattr(self.config, "run_avalanche_baselines", False)):
+            results["baselines"] = run_avalanche_baselines(
+                config=self.config,
                 device=self.device,
-                batch_size=self.config.train.batch_size,
             )
-        except Exception as exc:
-            results["robustness"] = {"status": "skipped", "reason": f"Robustness eval failed: {exc}"}
-        results["baselines"] = run_avalanche_baselines(
-            config=self.config,
-            device=self.device,
-        )
         self._write_results(results_path, results)
         return results
 
@@ -467,7 +485,7 @@ class BenchmarkRunner:
         generator.manual_seed(int(self.config.seed))
         worker_init = (
             functools.partial(_seed_worker, base_seed=int(self.config.seed))
-            if self.config.train.num_workers > 0
+            if self._loader_num_workers > 0
             else None
         )
 
@@ -477,9 +495,11 @@ class BenchmarkRunner:
                     train_ds,
                     batch_size=self.config.train.batch_size,
                     shuffle=True,
-                    num_workers=self.config.train.num_workers,
+                    num_workers=self._loader_num_workers,
                     generator=generator,
                     worker_init_fn=worker_init,
+                    pin_memory=self._pin_memory,
+                    persistent_workers=bool(self._loader_num_workers > 0),
                 )
             )
             eval_tasks.append(
@@ -487,46 +507,64 @@ class BenchmarkRunner:
                     test_ds,
                     batch_size=self.config.train.batch_size,
                     shuffle=False,
-                    num_workers=self.config.train.num_workers,
+                    num_workers=self._loader_num_workers,
                     generator=generator,
                     worker_init_fn=worker_init,
+                    pin_memory=self._pin_memory,
+                    persistent_workers=bool(self._loader_num_workers > 0),
                 )
             )
         return train_tasks, eval_tasks
 
     def _load_dataset_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        dataset_name = self.config.dataset.upper().replace("-", "")
+        if dataset_name == "SYNTHETIC":
+            return self._synthetic_bundle()
+
         try:
             from continuum import ClassIncremental
             from continuum.datasets import CIFAR10, CIFAR100
         except ModuleNotFoundError as exc:
-            import warnings
+            raise RuntimeError(
+                "Continuum is required for real datasets. "
+                "Install project dependencies with `pip install -r requirements.txt` "
+                "or run `python -m meld.bootstrap --download-datasets` after install."
+            ) from exc
 
-            warnings.warn(
-                f"Continuum not installed ({exc}). "
-                "Falling back to synthetic data. "
-                "Install with: pip install continuum-learn",
-                stacklevel=2,
-            )
-            return self._synthetic_bundle()
+        try:
+            import torchvision  # noqa: F401
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "torchvision is required for CIFAR dataset support. "
+                "Install project dependencies with `pip install -r requirements.txt`."
+            ) from exc
 
-        d = self.config.dataset.upper().replace("-", "")
+        d = dataset_name
         if d == "CIFAR10":
-            tr = CIFAR10(data_path=str(self.config.data_root), train=True, download=True)
-            te = CIFAR10(data_path=str(self.config.data_root), train=False, download=True)
+            try:
+                tr = CIFAR10(data_path=str(self.config.data_root), train=True, download=True)
+                te = CIFAR10(data_path=str(self.config.data_root), train=False, download=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to prepare CIFAR-10 at {self.config.data_root}. "
+                    "Check the data path, network access, and Continuum installation."
+                ) from exc
             mean, std = _CIFAR10_MEAN, _CIFAR10_STD
         elif d == "CIFAR100":
-            tr = CIFAR100(data_path=str(self.config.data_root), train=True, download=True)
-            te = CIFAR100(data_path=str(self.config.data_root), train=False, download=True)
+            try:
+                tr = CIFAR100(data_path=str(self.config.data_root), train=True, download=True)
+                te = CIFAR100(data_path=str(self.config.data_root), train=False, download=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to prepare CIFAR-100 at {self.config.data_root}. "
+                    "Check the data path, network access, and Continuum installation."
+                ) from exc
             mean, std = _CIFAR100_MEAN, _CIFAR100_STD
         else:
-            import warnings
-
-            warnings.warn(
+            raise ValueError(
                 f"Unsupported dataset '{self.config.dataset}'. "
-                "Falling back to synthetic data.",
-                stacklevel=2,
+                "Supported values: synthetic, CIFAR-10, CIFAR-100."
             )
-            return self._synthetic_bundle()
 
         s_tr = ClassIncremental(tr, increment=self.config.classes_per_task, transformations=None)
         s_te = ClassIncremental(te, increment=self.config.classes_per_task, transformations=None)
@@ -643,8 +681,89 @@ class BenchmarkRunner:
             combined,
             batch_size=self.config.train.batch_size,
             shuffle=shuffle,
-            num_workers=self.config.train.num_workers,
+            num_workers=self._loader_num_workers,
+            pin_memory=self._pin_memory,
+            persistent_workers=bool(self._loader_num_workers > 0),
         )
+
+    def _effective_num_workers(self) -> int:
+        configured = int(getattr(self.config.train, "num_workers", 0))
+        if self.device.type != "cuda":
+            return 0
+        return max(0, configured)
+
+    def _imprint_new_head(self, model: MELDModel, task_loader: DataLoader, class_ids: list[int]) -> None:
+        if not class_ids:
+            return
+
+        max_per_class = int(getattr(self.config.train, "imprinting_max_samples_per_class", 64))
+        sums: dict[int, torch.Tensor] = {}
+        counts: dict[int, int] = {class_id: 0 for class_id in class_ids}
+        target_norms = [
+            norm
+            for class_id, norm in model.classifier.all_norms().items()
+            if class_id not in class_ids
+        ]
+        target_norm = float(np.mean(target_norms)) if target_norms else 1.0
+
+        model.eval()
+        with torch.no_grad():
+            for inputs, targets in task_loader:
+                inputs = inputs.to(self.device, non_blocking=self._pin_memory)
+                targets = targets.to(self.device, non_blocking=self._pin_memory)
+                embeddings = model.embed(inputs)
+                for class_id in class_ids:
+                    remaining = max_per_class - counts[class_id]
+                    if remaining <= 0:
+                        continue
+                    mask = targets == class_id
+                    if not torch.any(mask):
+                        continue
+                    selected = embeddings[mask][:remaining]
+                    if selected.numel() == 0:
+                        continue
+                    sums[class_id] = sums.get(class_id, torch.zeros_like(selected[0])) + selected.sum(dim=0)
+                    counts[class_id] += int(selected.size(0))
+                if all(count >= max_per_class for count in counts.values()):
+                    break
+
+        for class_id in class_ids:
+            count = counts.get(class_id, 0)
+            if count <= 0:
+                continue
+            prototype = sums[class_id] / float(count)
+            prototype = F.normalize(prototype, dim=0) * target_norm
+            head_index, offset = model.classifier.class_to_head[class_id]
+            head = model.classifier.heads[head_index]
+            head.weight.data[offset].copy_(prototype)
+            head.bias.data[offset].zero_()
+
+    def _make_safe_train_config(
+        self,
+        snapshot_before: TaskSnapshot,
+        task_train_config: Any,
+        pre_bound: float,
+    ) -> tuple[Any, float]:
+        if pre_bound <= self.config.bound_tolerance:
+            return task_train_config, pre_bound
+        if not bool(getattr(task_train_config, "auto_scale_safe_update", True)):
+            return task_train_config, pre_bound
+
+        min_safe_lr = float(getattr(task_train_config, "min_safe_lr", 1e-5))
+        adjusted_config = task_train_config
+        adjusted_bound = pre_bound
+
+        for _ in range(4):
+            if adjusted_bound <= self.config.bound_tolerance:
+                break
+            ratio = self.config.bound_tolerance / max(adjusted_bound, 1e-12)
+            safe_lr = max(min_safe_lr, float(adjusted_config.lr) * ratio * 0.95)
+            if safe_lr >= float(adjusted_config.lr):
+                break
+            adjusted_config = replace(adjusted_config, lr=safe_lr)
+            adjusted_bound = self.safety_oracle.pre_bound(snapshot_before, adjusted_config)
+
+        return adjusted_config, adjusted_bound
 
     def _task_result(
         self,
@@ -660,6 +779,7 @@ class BenchmarkRunner:
         cil_metrics: dict[str, Any] | None = None,
         train_artifacts: TrainArtifacts | None = None,
     ) -> dict[str, Any]:
+        pac_epsilon, pac_delta = self.safety_oracle.pac_equivalence_gap()
         fc = np.asarray(full_metrics["confusion_matrix"])
         if delta_metrics is not None:
             dc = np.asarray(delta_metrics["confusion_matrix"])
@@ -677,7 +797,16 @@ class BenchmarkRunner:
         else:
             equivalence_gap = None
             forgetting = None
-            delta_payload = {"skipped": True, "wall_time_seconds": delta_wall_time_seconds}
+            delta_payload = {
+                "top1": None,
+                "top5": None,
+                "ece": None,
+                "ece_old": None,
+                "ece_new": None,
+                "per_class_acc": {},
+                "wall_time_seconds": delta_wall_time_seconds,
+                "skipped": True,
+            }
         return {
             "task_id": task_id,
             "delta": delta_payload,
@@ -691,8 +820,21 @@ class BenchmarkRunner:
                 "wall_time_seconds": full_metrics.get("wall_time_seconds", 0.0),
             },
             "snapshot": {"fisher_eigenvalue_max": snapshot.fisher_eigenvalue_max if snapshot else 0.0, "class_ids": snapshot.class_ids if snapshot else []},
-            "oracle": {"pre_bound": pre_bound, "post_bound": post_bound, "bound_held": decision.bound_held if task_id > 0 else True},
-            "drift": {"shift_score": drift_result.shift_score, "shift_detected": drift_result.shift_detected, "severity": drift_result.severity, "per_class_drift": drift_result.per_class_drift},
+            "oracle": {
+                "pre_bound": pre_bound,
+                "post_bound": post_bound,
+                "bound_held": decision.bound_held if task_id > 0 else True,
+                "pac_epsilon": pac_epsilon,
+                "pac_delta": pac_delta,
+            },
+            "drift": {
+                "shift_score": drift_result.shift_score,
+                "shift_detected": drift_result.shift_detected,
+                "severity": drift_result.severity,
+                "per_class_drift": drift_result.per_class_drift,
+                "detector_scores": drift_result.detector_scores,
+                "input_shift_score": drift_result.input_shift_score,
+            },
             "decision": asdict(decision),
             "equivalence_gap": equivalence_gap,
             "forgetting": forgetting,
@@ -741,18 +883,21 @@ class BenchmarkRunner:
             "bound_tolerance": self.config.bound_tolerance,
             "shift_threshold": self.config.shift_threshold,
             "prefer_cuda": self.config.prefer_cuda,
+            "database_path": str(self.config.database_path) if getattr(self.config, "database_path", None) else None,
             "seed": self.config.seed,
             "train": asdict(self.config.train),
         }
 
     def _write_results(self, results_path: str | Path | None, payload: dict[str, Any]) -> None:
         if results_path is None:
+            self._result_store.sync_run(payload)
             return
         path = Path(results_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(tmp, path)
+        self._result_store.sync_run(payload)
 
 
 class _PolicyConfigProxy:

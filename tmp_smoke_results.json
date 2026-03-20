@@ -1,0 +1,294 @@
+{
+  "run_id": "20260320T071853.237882Z",
+  "status": "completed",
+  "config": {
+    "dataset": "synthetic",
+    "num_tasks": 2,
+    "classes_per_task": 2,
+    "bound_tolerance": 10.0,
+    "shift_threshold": 0.3,
+    "prefer_cuda": false,
+    "database_path": "tmp_smoke_results.db",
+    "seed": 7,
+    "train": {
+      "backbone": "resnet20",
+      "pretrained_backbone": false,
+      "epochs": 1,
+      "batch_size": 8,
+      "lr": 0.1,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "freeze_bn_stats": true,
+      "lambda_geometry": 0.5,
+      "lambda_ewc": 0.3,
+      "lambda_kd": 1.0,
+      "kd_temperature": 2.0,
+      "geometry_decay": 0.3,
+      "use_imprinting": true,
+      "imprinting_max_samples_per_class": 64,
+      "use_ema_fisher": true,
+      "fisher_ema_decay": 0.9,
+      "auto_derive_hparams": false,
+      "protection_level": 0.5,
+      "full_retrain_epochs": null,
+      "num_workers": 0
+    }
+  },
+  "tasks": [
+    {
+      "task_id": 0,
+      "delta": {
+        "top1": 0.5,
+        "top5": 1.0,
+        "ece": 0.33338441187515855,
+        "ece_old": null,
+        "ece_new": 0.33338441187515855,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 1.0
+        },
+        "wall_time_seconds": 0.2059929370880127
+      },
+      "full_retrain": {
+        "top1": 0.5,
+        "top5": 1.0,
+        "ece": 0.35767900943756104,
+        "ece_old": null,
+        "ece_new": 0.35767900943756104,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 1.0
+        },
+        "wall_time_seconds": 0.1921694278717041
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 1.1625394821166992,
+        "class_ids": [
+          0,
+          1
+        ]
+      },
+      "oracle": {
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": true
+      },
+      "drift": {
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {}
+      },
+      "decision": {
+        "state": "SAFE_DELTA",
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": true,
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "reason": "bound held, no shift detected",
+        "compute_savings_percent": -7.19339666533088,
+        "confidence": 1.0,
+        "recommended_action": "delta_update"
+      },
+      "equivalence_gap": 2.220446049250313e-16,
+      "forgetting": 0.0,
+      "compute_savings_percent": -7.19339666533088,
+      "cil_metrics": {
+        "forward_transfer_top1": null,
+        "forgetting_per_task": {},
+        "backward_transfer_per_task": {},
+        "mean_forgetting": null,
+        "mean_backward_transfer": null
+      },
+      "train": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.5707815513014793
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.5862068965517241
+        ],
+        "projected_step_fraction": 0.0,
+        "skipped": false
+      }
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "top1": 0.25,
+        "top5": 1.0,
+        "ece": 0.4862019084393978,
+        "ece_old": 0.5436825007200241,
+        "ece_new": 0.4287212938070297,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 1.0
+        },
+        "wall_time_seconds": 0.26328277587890625
+      },
+      "full_retrain": {
+        "top1": 0.25,
+        "top5": 1.0,
+        "ece": 0.6617808155715466,
+        "ece_old": 0.8357015922665596,
+        "ece_new": 0.4878600835800171,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 1.0
+        },
+        "wall_time_seconds": 0.19820141792297363
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 1.4708729982376099,
+        "class_ids": [
+          0,
+          1
+        ]
+      },
+      "oracle": {
+        "pre_bound": 3.6658964686004496,
+        "post_bound": 0.5047677755355835,
+        "bound_held": true
+      },
+      "drift": {
+        "shift_score": 11948.49853515625,
+        "shift_detected": true,
+        "severity": "critical",
+        "per_class_drift": {
+          "0": 7413.8154296875,
+          "1": 16483.181640625
+        }
+      },
+      "decision": {
+        "state": "SHIFT_CRITICAL",
+        "pre_bound": 3.6658964686004496,
+        "post_bound": 0.5047677755355835,
+        "bound_held": true,
+        "shift_score": 11948.49853515625,
+        "shift_detected": true,
+        "reason": "critical manifold shift detected",
+        "compute_savings_percent": -32.83596991280101,
+        "confidence": 1.0,
+        "recommended_action": "full_retrain"
+      },
+      "equivalence_gap": 0.25,
+      "forgetting": 0.0,
+      "compute_savings_percent": -32.83596991280101,
+      "cil_metrics": {
+        "forward_transfer_top1": 1.0,
+        "forgetting_per_task": {
+          "0": 0.5
+        },
+        "backward_transfer_per_task": {
+          "0": -0.5
+        },
+        "mean_forgetting": 0.5,
+        "mean_backward_transfer": -0.5
+      },
+      "train": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.9264472350478172
+        ],
+        "geometry_loss_per_epoch": [
+          8.046626476243546e-08
+        ],
+        "ewc_loss_per_epoch": [
+          0.00042693911518654204
+        ],
+        "train_accuracy_per_epoch": [
+          0.6379310344827587
+        ],
+        "projected_step_fraction": 21.75,
+        "skipped": false
+      }
+    }
+  ],
+  "bounds_timeline": [
+    {
+      "task_id": 0,
+      "epsilon_max": 0.0,
+      "epsilon_actual": 0.0,
+      "bound_held": true
+    },
+    {
+      "task_id": 1,
+      "epsilon_max": 3.6658964686004496,
+      "epsilon_actual": 0.5047677755355835,
+      "bound_held": true
+    }
+  ],
+  "epoch_history": [
+    {
+      "task_id": 0,
+      "delta": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.5707815513014793
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.5862068965517241
+        ],
+        "projected_step_fraction": 0.0,
+        "skipped": false
+      }
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.9264472350478172
+        ],
+        "geometry_loss_per_epoch": [
+          8.046626476243546e-08
+        ],
+        "ewc_loss_per_epoch": [
+          0.00042693911518654204
+        ],
+        "train_accuracy_per_epoch": [
+          0.6379310344827587
+        ],
+        "projected_step_fraction": 21.75,
+        "skipped": false
+      }
+    }
+  ],
+  "final_summary": {
+    "mean_delta_top1": 0.375,
+    "mean_full_retrain_top1": 0.375,
+    "mean_equivalence_gap": 0.1250000000000001,
+    "mean_compute_savings": -20.014683289065946,
+    "decisions": [
+      "SAFE_DELTA",
+      "SHIFT_CRITICAL"
+    ],
+    "total_wall_time_delta": 0.46927571296691895,
+    "total_wall_time_full_retrain": 0.39037084579467773
+  },
+  "robustness": {
+    "status": "skipped",
+    "reason": "Robustness evaluation disabled by config."
+  },
+  "baselines": {
+    "status": "skipped",
+    "reason": "Avalanche baselines disabled by config."
+  }
+}

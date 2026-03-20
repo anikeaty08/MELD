@@ -22,6 +22,11 @@ dist/
 results.json
 results_verify.json
 experiment.log
+results_cifar10_big_check.json
+results_cifar10_smoke.json  
+results_cifar10_hard_pretrained.json
+meld_results.db
+tmp_smoke_results.db
 
 # Dataset and large local assets
 data/

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,7 @@ ROOT_TEMPLATE = """
     <label>Pretrained backbone <input name="pretrained_backbone" type="checkbox"></label><br>
     <button type="submit">Launch</button>
   </form>
-  <p><a href="/monitor">Monitor</a> | <a href="/results">Results JSON</a> | <a href="/results/csv">Export CSV</a></p>
+  <p><a href="/monitor">Monitor</a> | <a href="/results">Results JSON</a> | <a href="/results/db">Results DB</a> | <a href="/results/csv">Export CSV</a></p>
   <h3>Bound Timeline</h3>
   <canvas id="bound-chart" width="800" height="240" style="border:1px solid #ddd"></canvas>
   <pre id="status"></pre>
@@ -157,6 +158,7 @@ MONITOR_TEMPLATE = """
 
 RESULTS_PATH = Path("results.json")
 LOG_PATH = Path("experiment.log")
+DB_PATH = Path("meld_results.db")
 
 
 @dataclass
@@ -236,6 +238,69 @@ def results() -> JSONResponse:
     if not RESULTS_PATH.exists():
         return JSONResponse({"status": "no_results"})
     return JSONResponse(json.loads(RESULTS_PATH.read_text(encoding="utf-8")))
+
+
+@app.get("/results/db")
+def results_db() -> JSONResponse:
+    if not DB_PATH.exists():
+        return JSONResponse({"status": "no_database"})
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT run_id, status, config_json, final_summary_json, payload_json FROM runs ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return JSONResponse({"status": "empty_database"})
+        run_id, status, config_json, final_summary_json, payload_json = row
+        tasks = conn.execute(
+            """
+            SELECT task_id, delta_json, full_retrain_json, oracle_json, drift_json, decision_json,
+                   snapshot_json, train_json, cil_metrics_json, equivalence_gap, forgetting,
+                   compute_savings_percent
+            FROM tasks
+            WHERE run_id = ?
+            ORDER BY task_id ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    return JSONResponse(
+        {
+            "status": status,
+            "run_id": run_id,
+            "config": json.loads(config_json) if config_json else None,
+            "final_summary": json.loads(final_summary_json) if final_summary_json else None,
+            "tasks": [
+                {
+                    "task_id": task_id,
+                    "delta": json.loads(delta_json) if delta_json else None,
+                    "full_retrain": json.loads(full_json) if full_json else None,
+                    "oracle": json.loads(oracle_json) if oracle_json else None,
+                    "drift": json.loads(drift_json) if drift_json else None,
+                    "decision": json.loads(decision_json) if decision_json else None,
+                    "snapshot": json.loads(snapshot_json) if snapshot_json else None,
+                    "train": json.loads(train_json) if train_json else None,
+                    "cil_metrics": json.loads(cil_json) if cil_json else None,
+                    "equivalence_gap": equivalence_gap,
+                    "forgetting": forgetting,
+                    "compute_savings_percent": compute_savings_percent,
+                }
+                for (
+                    task_id,
+                    delta_json,
+                    full_json,
+                    oracle_json,
+                    drift_json,
+                    decision_json,
+                    snapshot_json,
+                    train_json,
+                    cil_json,
+                    equivalence_gap,
+                    forgetting,
+                    compute_savings_percent,
+                ) in tasks
+            ],
+            "payload": json.loads(payload_json),
+        }
+    )
 
 
 @app.get("/results/csv")

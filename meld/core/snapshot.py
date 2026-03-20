@@ -15,10 +15,17 @@ from ..interfaces.base import SnapshotStrategy, TaskSnapshot
 
 
 class FisherManifoldSnapshot(SnapshotStrategy):
-    def __init__(self, fisher_samples: int = 512, covariance_eps: float = 1e-6, anchors_per_class: int = 20) -> None:
+    def __init__(
+        self,
+        fisher_samples: int = 512,
+        covariance_eps: float = 1e-6,
+        anchors_per_class: int = 20,
+        input_feature_samples: int = 128,
+    ) -> None:
         self.fisher_samples = fisher_samples
         self.covariance_eps = covariance_eps
         self.anchors_per_class = anchors_per_class
+        self.input_feature_samples = input_feature_samples
         self._ema_fisher: np.ndarray | None = None
         self._ema_decay: float = 0.9
         # EMA factors for K-FAC style curvature approximation on a small set of
@@ -29,20 +36,45 @@ class FisherManifoldSnapshot(SnapshotStrategy):
     def capture(self, model: nn.Module, dataloader: DataLoader, class_ids: list[int], task_id: int) -> TaskSnapshot:
         device = next(model.parameters()).device
         model.eval()
+        valid_class_ids = [int(class_id) for class_id in class_ids if int(class_id) in model.classifier.class_to_head]
+        protected_head_indices = sorted(
+            {
+                model.classifier.class_to_head[class_id][0]
+                for class_id in valid_class_ids
+            }
+        )
+        protected_parameter_names = [
+            name
+            for name, param in model.named_parameters()
+            if param.requires_grad and self._is_protected_parameter(name, protected_head_indices)
+        ]
+        if not protected_parameter_names:
+            protected_parameter_names = [
+                name for name, param in model.named_parameters() if param.requires_grad
+            ]
         class_embeddings: dict[int, list[np.ndarray]] = defaultdict(list)
         class_logits: dict[int, list[np.ndarray]] = defaultdict(list)
+        input_feature_batches: list[np.ndarray] = []
         total_samples = 0
         with torch.no_grad():
             for inputs, targets in dataloader:
                 inputs = inputs.to(device)
+                input_feature_batches.append(self._input_features(inputs).detach().cpu().numpy())
                 embeddings_tensor = model.embed(inputs)
                 logits_tensor = model.classifier(embeddings_tensor)
+                if valid_class_ids:
+                    logits_tensor = logits_tensor.index_select(
+                        1,
+                        torch.tensor(valid_class_ids, device=device, dtype=torch.long),
+                    )
+                else:
+                    logits_tensor = logits_tensor[:, :0]
                 embeddings = embeddings_tensor.detach().cpu().numpy()
                 logits = logits_tensor.detach().cpu().numpy()
                 targets_list = targets.tolist()
                 for i, target in enumerate(targets_list):
                     tid = int(target)
-                    if tid in class_ids:
+                    if tid in valid_class_ids:
                         class_embeddings[tid].append(embeddings[i])
                         class_logits[tid].append(logits[i])
                         total_samples += 1
@@ -51,9 +83,14 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         class_covs: dict[int, np.ndarray] = {}
         class_anchors: dict[int, np.ndarray] = {}
         class_anchor_logits: dict[int, np.ndarray] = {}
-        for class_id in class_ids:
-            vectors = np.stack(class_embeddings[class_id], axis=0)
-            logits = np.stack(class_logits[class_id], axis=0)
+        available_class_ids: list[int] = []
+        for class_id in valid_class_ids:
+            vectors_list = class_embeddings.get(class_id, [])
+            logits_list = class_logits.get(class_id, [])
+            if not vectors_list or not logits_list:
+                continue
+            vectors = np.stack(vectors_list, axis=0)
+            logits = np.stack(logits_list, axis=0)
             class_means[class_id] = vectors.mean(axis=0)
             class_covs[class_id] = vectors.var(axis=0) + self.covariance_eps
             anchor_count = min(self.anchors_per_class, len(vectors))
@@ -64,6 +101,30 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             else:
                 class_anchors[class_id] = vectors[:0]
                 class_anchor_logits[class_id] = logits[:0]
+            available_class_ids.append(class_id)
+
+        classifier_weights = {
+            class_id: model.classifier.weight_vector(class_id).detach().cpu().numpy().copy()
+            for class_id in available_class_ids
+        }
+        classifier_biases = {
+            class_id: float(model.classifier.bias_value(class_id).detach().cpu().item())
+            for class_id in available_class_ids
+        }
+        if input_feature_batches:
+            input_features = np.concatenate(input_feature_batches, axis=0).astype(np.float32, copy=False)
+            input_feature_mean = input_features.mean(axis=0)
+            input_feature_var = input_features.var(axis=0) + self.covariance_eps
+            sample_count = min(self.input_feature_samples, len(input_features))
+            if sample_count > 0:
+                indices = np.linspace(0, len(input_features) - 1, num=sample_count, dtype=int)
+                input_feature_samples = input_features[indices]
+            else:
+                input_feature_samples = np.empty((0, 0), dtype=np.float32)
+        else:
+            input_feature_mean = np.array([], dtype=np.float32)
+            input_feature_var = np.array([], dtype=np.float32)
+            input_feature_samples = np.empty((0, 0), dtype=np.float32)
 
         fisher_samples = self.fisher_samples
         try:
@@ -78,12 +139,14 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             kfac_factors_A,
             kfac_factors_G,
             kfac_eig_max,
-        ) = self._compute_fisher(model, dataloader, fisher_samples)
+        ) = self._compute_fisher(model, dataloader, fisher_samples, protected_parameter_names)
         if self._ema_fisher is not None and self._ema_fisher.shape == fisher_diagonal.shape:
             fisher_diagonal = self._ema_decay * self._ema_fisher + (1.0 - self._ema_decay) * fisher_diagonal
         self._ema_fisher = fisher_diagonal.copy()
         parameter_reference = [
-            param.detach().cpu().numpy().copy() for param in model.parameters() if param.requires_grad
+            param.detach().cpu().numpy().copy()
+            for name, param in model.named_parameters()
+            if param.requires_grad and name in protected_parameter_names
         ]
         steps_per_epoch = max(1, math.ceil(max(1, len(dataloader.dataset)) / max(1, dataloader.batch_size or 1)))
         diag_eig_max = float(np.max(fisher_diagonal)) if fisher_diagonal.size else 0.0
@@ -91,7 +154,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
 
         return TaskSnapshot(
             task_id=task_id,
-            class_ids=list(class_ids),
+            class_ids=available_class_ids,
             class_means=class_means,
             class_covs=class_covs,
             class_anchors=class_anchors,
@@ -105,6 +168,13 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             dataset_size=len(dataloader.dataset),
             steps_per_epoch=steps_per_epoch,
             parameter_reference=parameter_reference,
+            protected_parameter_names=protected_parameter_names,
+            classifier_weights=classifier_weights,
+            classifier_biases=classifier_biases,
+            importance_weights={},
+            input_feature_mean=input_feature_mean,
+            input_feature_var=input_feature_var,
+            input_feature_samples=input_feature_samples,
             kfac_weight_param_names=kfac_weight_param_names,
             kfac_factors_A=kfac_factors_A,
             kfac_factors_G=kfac_factors_G,
@@ -115,6 +185,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         model: nn.Module,
         dataloader: DataLoader,
         fisher_samples: int,
+        protected_parameter_names: list[str] | None = None,
     ) -> tuple[
         np.ndarray,
         float,
@@ -124,19 +195,29 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         float,
     ]:
         device = next(model.parameters()).device
-        params = [param for param in model.parameters() if param.requires_grad]
+        protected = set(protected_parameter_names or [])
+        named_params = [
+            (name, param)
+            for name, param in model.named_parameters()
+            if param.requires_grad and (not protected or name in protected)
+        ]
+        params = [param for _, param in named_params]
         fisher = [torch.zeros_like(param, device=device) for param in params]
         grad_norms = []
         total = 0
         criterion = nn.CrossEntropyLoss()
 
         # K-FAC factors for the last 2 Linear layers (by module order).
-        linear_modules = [m for m in model.modules() if isinstance(m, nn.Linear)]
+        linear_modules = [
+            (name, module)
+            for name, module in model.named_modules()
+            if isinstance(module, nn.Linear) and (not protected or f"{name}.weight" in protected)
+        ]
         kfac_modules = linear_modules[-2:] if len(linear_modules) >= 2 else linear_modules
         name_by_param = {p: n for n, p in model.named_parameters()}
 
         kfac_weight_param_names: list[str] = []
-        for m in kfac_modules:
+        for _, m in kfac_modules:
             pname = name_by_param.get(m.weight)
             if pname is not None:
                 kfac_weight_param_names.append(pname)
@@ -147,7 +228,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         G_acc: dict[str, Tensor] = {}
         handles = []
 
-        for m in kfac_modules:
+        for _, m in kfac_modules:
             pname = name_by_param.get(m.weight)
             if pname is None:
                 continue
@@ -252,3 +333,18 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             kfac_G_np[pname] = G_np
 
         return fisher_np, mean_grad_norm, kfac_weight_param_names, kfac_A_np, kfac_G_np, kfac_eig_max
+
+    @staticmethod
+    def _is_protected_parameter(name: str, protected_head_indices: list[int]) -> bool:
+        if name.startswith("backbone."):
+            return True
+        return any(name.startswith(f"classifier.heads.{head_index}.") for head_index in protected_head_indices)
+
+    @staticmethod
+    def _input_features(inputs: Tensor) -> Tensor:
+        channel_mean = inputs.mean(dim=(2, 3))
+        channel_std = inputs.std(dim=(2, 3), unbiased=False)
+        flat = inputs.flatten(start_dim=1)
+        global_mean = flat.mean(dim=1, keepdim=True)
+        global_std = flat.std(dim=1, unbiased=False, keepdim=True)
+        return torch.cat((channel_mean, channel_std, global_mean, global_std), dim=1)

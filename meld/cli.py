@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from .api import MELDConfig, TrainConfig, run
 from .core.snapshot import FisherManifoldSnapshot
@@ -26,9 +27,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lambda-geometry", type=float, default=1.0)
     parser.add_argument("--lambda-ewc", type=float, default=0.4)
     parser.add_argument("--geometry-decay", type=float, default=0.5)
+    parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--cutmix-alpha", type=float, default=0.0)
     parser.add_argument("--fisher-samples", type=int, default=512)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--prefer-cuda", action="store_true")
+    parser.add_argument("--data-root", default="./data")
+    parser.add_argument("--database-path", default="meld_results.db")
     parser.add_argument("--results-path", default="results.json")
     return parser
 
@@ -42,6 +47,8 @@ def main() -> None:
         prefer_cuda=args.prefer_cuda,
         bound_tolerance=args.bound_tolerance,
         shift_threshold=args.shift_threshold,
+        data_root=Path(args.data_root),
+        database_path=Path(args.database_path) if args.database_path else None,
         train=TrainConfig(
             backbone=args.backbone,
             pretrained_backbone=args.pretrained_backbone,
@@ -51,6 +58,8 @@ def main() -> None:
             lambda_geometry=args.lambda_geometry,
             lambda_ewc=args.lambda_ewc,
             geometry_decay=args.geometry_decay,
+            label_smoothing=args.label_smoothing,
+            cutmix_alpha=args.cutmix_alpha,
             num_workers=args.num_workers,
         ),
     )

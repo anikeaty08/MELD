@@ -13,6 +13,11 @@ MELD (Manifold-Equivalent Learning with Deployment guarantees) is a class-increm
 
 ## Quick start
 
+```bash
+python -m pip install -r requirements.txt
+python -m meld.bootstrap --data-root ./data
+```
+
 ```python
 from meld.api import MELDConfig, TrainConfig, run
 
@@ -31,7 +36,7 @@ results = run(
 python -m meld.cli --dataset CIFAR-10 --num-tasks 2 --classes-per-task 5 --epochs 1
 ```
 
-If Continuum is unavailable, MELD falls back to a synthetic class-incremental dataset so the framework remains runnable for development and tests.
+Use `dataset="synthetic"` only for tests and smoke runs. Real dataset commands now fail fast with a clear error if `continuum` or `torchvision` is missing, instead of silently training on synthetic data.
 
 ## Web dashboard
 
