@@ -545,3 +545,126 @@ class FullRetrainUpdater(ManifoldUpdater):
             wall_time_seconds=time.time() - start,
             loss_history=loss_hist,
         )
+
+
+class FrozenBackboneAnalyticUpdater(ManifoldUpdater):
+    """Replay-free analytic updater over frozen features.
+
+    Task 0 should still be trained with the standard SGD updater. For
+    incremental tasks, this updater keeps the backbone fixed and fits the
+    newest classifier head with ridge regression on current-task features.
+    """
+
+    def update(
+        self,
+        model: nn.Module,
+        new_data_loader: DataLoader,
+        snapshot: TaskSnapshot | None,
+        config: object,
+    ) -> tuple[nn.Module, TrainArtifacts]:
+        if snapshot is None:
+            return FullRetrainUpdater().update(model, new_data_loader, snapshot, config)
+
+        device = next(model.parameters()).device
+        start = time.time()
+
+        for param in model.backbone.parameters():
+            param.requires_grad_(False)
+
+        model.eval()
+        features, local_targets = self._collect_task_features(model, new_data_loader, device)
+        if features.numel() == 0 or local_targets.numel() == 0:
+            return model, TrainArtifacts(
+                epochs_run=0,
+                lambda_schedule=[],
+                geometry_loss_per_epoch=[],
+                ewc_loss_per_epoch=[],
+                ce_loss_per_epoch=[],
+                train_accuracy_per_epoch=[],
+                projected_step_fraction=None,
+                wall_time_seconds=time.time() - start,
+                loss_history=[],
+                skipped=True,
+            )
+
+        head = model.classifier.heads[-1]
+        weight, bias = self._solve_ridge_head(
+            features,
+            local_targets,
+            num_classes=head.out_features,
+            ridge=float(getattr(config, "analytic_ridge", 1e-3)),
+        )
+
+        with torch.no_grad():
+            head.weight.copy_(weight)
+            head.bias.copy_(bias)
+
+        logits = head(features)
+        ce = F.cross_entropy(logits, local_targets)
+        train_accuracy = float((logits.argmax(dim=1) == local_targets).float().mean().item())
+
+        for param in model.backbone.parameters():
+            param.requires_grad_(True)
+
+        return model, TrainArtifacts(
+            epochs_run=1,
+            lambda_schedule=[],
+            geometry_loss_per_epoch=[0.0],
+            ewc_loss_per_epoch=[0.0],
+            ce_loss_per_epoch=[float(ce.item())],
+            train_accuracy_per_epoch=[train_accuracy],
+            projected_step_fraction=None,
+            wall_time_seconds=time.time() - start,
+            loss_history=[float(ce.item())],
+        )
+
+    def _collect_task_features(
+        self,
+        model: nn.Module,
+        dataloader: DataLoader,
+        device: torch.device,
+    ) -> tuple[Tensor, Tensor]:
+        features: list[Tensor] = []
+        local_targets: list[Tensor] = []
+        class_to_local: dict[int, int] = {}
+
+        with torch.no_grad():
+            for inputs, targets in dataloader:
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                embeddings = model.embed(inputs)
+                features.append(embeddings)
+                for class_id in targets.unique().tolist():
+                    if int(class_id) not in class_to_local:
+                        _, offset = model.classifier.class_to_head[int(class_id)]
+                        class_to_local[int(class_id)] = int(offset)
+                mapped = torch.tensor(
+                    [class_to_local[int(class_id)] for class_id in targets.tolist()],
+                    device=device,
+                    dtype=torch.long,
+                )
+                local_targets.append(mapped)
+
+        if not features:
+            return torch.empty(0, model.out_dim, device=device), torch.empty(0, dtype=torch.long, device=device)
+        return torch.cat(features, dim=0), torch.cat(local_targets, dim=0)
+
+    @staticmethod
+    def _solve_ridge_head(
+        features: Tensor,
+        targets: Tensor,
+        num_classes: int,
+        ridge: float,
+    ) -> tuple[Tensor, Tensor]:
+        dtype = features.dtype
+        device = features.device
+        ones = torch.ones(features.size(0), 1, device=device, dtype=dtype)
+        design = torch.cat((features, ones), dim=1)
+        target_matrix = F.one_hot(targets, num_classes=num_classes).to(dtype=dtype)
+        gram = design.t() @ design
+        gram = gram + ridge * torch.eye(gram.size(0), device=device, dtype=dtype)
+        rhs = design.t() @ target_matrix
+        solution = torch.linalg.solve(gram, rhs)
+        weight = solution[:-1].t().contiguous()
+        bias = solution[-1].contiguous()
+        return weight, bias

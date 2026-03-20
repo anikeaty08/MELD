@@ -318,6 +318,10 @@ class FisherManifoldSnapshot(SnapshotStrategy):
 
             A_np = A.detach().cpu().numpy().astype(np.float32, copy=False)
             G_np = G.detach().cpu().numpy().astype(np.float32, copy=False)
+            A_np = np.nan_to_num(0.5 * (A_np + A_np.T), nan=0.0, posinf=1e6, neginf=-1e6)
+            G_np = np.nan_to_num(0.5 * (G_np + G_np.T), nan=0.0, posinf=1e6, neginf=-1e6)
+            A_np = A_np + np.eye(A_np.shape[0], dtype=np.float32) * self.covariance_eps
+            G_np = G_np + np.eye(G_np.shape[0], dtype=np.float32) * self.covariance_eps
             self._ema_kfac_A[pname] = A_np.copy()
             self._ema_kfac_G[pname] = G_np.copy()
 

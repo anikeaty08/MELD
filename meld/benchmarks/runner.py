@@ -20,12 +20,12 @@ from torch.utils.data import ConcatDataset, DataLoader, Dataset, TensorDataset
 
 from ..core.auto_config import derive_train_config
 from ..core.corrector import AnalyticNormCorrector
-from ..core.drift import CompositeDriftDetector, KLManifoldDriftDetector
+from ..core.drift import CompositeDriftDetector
 from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
-from ..core.updater import FullRetrainUpdater, GeometryConstrainedUpdater
-from ..interfaces.base import Decision, DriftDetector, DriftResult, TaskSnapshot, TrainArtifacts
+from ..core.updater import FrozenBackboneAnalyticUpdater, FullRetrainUpdater, GeometryConstrainedUpdater
+from ..interfaces.base import Decision, DriftDetector, DriftResult, ManifoldUpdater, TaskSnapshot, TrainArtifacts
 from ..modeling import MELDModel
 from ..models.backbone import resnet20, resnet32, resnet44, resnet56
 from ..models.classifier import IncrementalClassifier
@@ -85,7 +85,7 @@ class BenchmarkRunner:
         config: "MELDConfig",
         snapshot_strategy: FisherManifoldSnapshot | None = None,
         safety_oracle: SpectralSafetyOracle | None = None,
-        updater: GeometryConstrainedUpdater | None = None,
+        updater: ManifoldUpdater | None = None,
         corrector: AnalyticNormCorrector | None = None,
         drift_detector: DriftDetector | None = None,
         deploy_policy: FourStateDeployPolicy | None = None,
@@ -94,6 +94,8 @@ class BenchmarkRunner:
         self.snapshot_strategy = snapshot_strategy or FisherManifoldSnapshot()
         self.safety_oracle = safety_oracle or SpectralSafetyOracle()
         self.updater = updater or GeometryConstrainedUpdater()
+        self.analytic_updater = FrozenBackboneAnalyticUpdater()
+        self._custom_updater_provided = updater is not None
         self.full_retrain_updater = FullRetrainUpdater()
         self.corrector = corrector or AnalyticNormCorrector()
         self.drift_detector = drift_detector or CompositeDriftDetector(config.shift_threshold)
@@ -171,14 +173,17 @@ class BenchmarkRunner:
                     )
                 else:
                     task_train_config = self.config.train
-                pre_bound = self.safety_oracle.pre_bound(snapshot_before, task_train_config)
-                task_train_config, pre_bound = self._make_safe_train_config(
-                    snapshot_before,
-                    task_train_config,
-                    pre_bound,
-                )
+                if self._uses_frozen_analytic(task_id):
+                    pre_bound = 0.0
+                else:
+                    pre_bound = self.safety_oracle.pre_bound(snapshot_before, task_train_config)
+                    task_train_config, pre_bound = self._make_safe_train_config(
+                        snapshot_before,
+                        task_train_config,
+                        pre_bound,
+                    )
             else:
-                task_train_config = self.config.train
+                task_train_config = self._base_train_config()
 
             if task_id > 0 and pre_bound > self.config.bound_tolerance:
                 delta_artifacts = TrainArtifacts(
@@ -209,7 +214,8 @@ class BenchmarkRunner:
                     recommended_action="full_retrain",
                 )
             else:
-                model, delta_artifacts = self.updater.update(
+                delta_updater = self._delta_updater_for_task(task_id)
+                model, delta_artifacts = delta_updater.update(
                     model, task_loader, snapshot_before, task_train_config
                 )
                 if snapshot_before is not None:
@@ -765,6 +771,22 @@ class BenchmarkRunner:
 
         return adjusted_config, adjusted_bound
 
+    def _base_train_config(self) -> Any:
+        base_epochs = getattr(self.config.train, "base_epochs", None)
+        if base_epochs is None:
+            return self.config.train
+        return replace(self.config.train, epochs=int(base_epochs))
+
+    def _uses_frozen_analytic(self, task_id: int) -> bool:
+        if self._custom_updater_provided:
+            return False
+        return task_id > 0 and str(getattr(self.config.train, "incremental_strategy", "geometry")) == "frozen_analytic"
+
+    def _delta_updater_for_task(self, task_id: int) -> ManifoldUpdater:
+        if self._uses_frozen_analytic(task_id):
+            return self.analytic_updater
+        return self.updater
+
     def _task_result(
         self,
         task_id: int,
@@ -779,7 +801,10 @@ class BenchmarkRunner:
         cil_metrics: dict[str, Any] | None = None,
         train_artifacts: TrainArtifacts | None = None,
     ) -> dict[str, Any]:
-        pac_epsilon, pac_delta = self.safety_oracle.pac_equivalence_gap()
+        if hasattr(self.safety_oracle, "pac_equivalence_gap"):
+            pac_epsilon, pac_delta = self.safety_oracle.pac_equivalence_gap()
+        else:
+            pac_epsilon, pac_delta = 0.0, 0.0
         fc = np.asarray(full_metrics["confusion_matrix"])
         if delta_metrics is not None:
             dc = np.asarray(delta_metrics["confusion_matrix"])
