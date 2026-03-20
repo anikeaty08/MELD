@@ -41,6 +41,27 @@ class DeltaUpdateResult:
     drift: dict[str, Any]
     train: dict[str, Any]
     compute_savings_percent: float
+    # Deployment safety fields — mirroring runner.py formal_guarantee logic
+    safe_to_deploy: bool = False
+    formal_guarantee: bool = False
+
+    def __str__(self) -> str:
+        guarantee = " [formal guarantee]" if self.formal_guarantee else ""
+        return (
+            f"DeltaUpdateResult(task={self.task_id}{guarantee})\n"
+            f"  decision         : {self.decision}\n"
+            f"  safe_to_deploy   : {self.safe_to_deploy}\n"
+            f"  recommended      : {self.recommended_action}\n"
+            f"  drift severity   : {self.drift.get('severity', '?')}  "
+            f"(score={float(self.drift.get('shift_score', 0)):.4f})\n"
+            f"  risk pre→post    : "
+            f"{float(self.oracle.get('risk_estimate_pre', 0)):.4f} → "
+            f"{float(self.oracle.get('drift_realized_post', 0)):.4f}\n"
+            f"  pac_style_gap    : "
+            f"{self.oracle.get('pac_style_gap', {}).get('value', 'n/a')}\n"
+            f"  compute saved    : {self.compute_savings_percent:.1f}%\n"
+            f"  epochs run       : {self.train.get('epochs_run', 0)}"
+        )
 
 
 class DeltaModel:
@@ -140,6 +161,7 @@ class DeltaModel:
         current_classes = self._loader_class_ids(loader)
         self._ensure_classes(current_classes)
         snapshot_before = self._snapshot
+        pac_gate_tolerance = float(getattr(self.train_config, "pac_gate_tolerance", 0.1))
 
         if snapshot_before is not None:
             pre_risk_estimate = self._safety_oracle.pre_risk_estimate(snapshot_before, self.train_config)
@@ -151,7 +173,20 @@ class DeltaModel:
                 bound_is_formal=False,
             )
 
-        if snapshot_before is not None and pre_risk_estimate.value > self.bound_tolerance:
+        # PAC gate: compute formal Hoeffding gap before training.
+        # If it exceeds pac_gate_tolerance, skip the update — same logic as runner.py.
+        pac_style: OracleEstimate | None = None
+        pac_gate_triggered = False
+        if snapshot_before is not None and hasattr(self._safety_oracle, "pac_style_gap"):
+            pac_style = self._safety_oracle.pac_style_gap(snapshot_before)
+            pac_gate_triggered = bool(
+                pac_style.bound_is_formal
+                and pac_style.value > pac_gate_tolerance
+            )
+
+        spectral_gate = snapshot_before is not None and pre_risk_estimate.value > self.bound_tolerance
+
+        if spectral_gate or pac_gate_triggered:
             post_drift_realized = OracleEstimate(
                 value=pre_risk_estimate.value,
                 bound_type="training_skipped",
@@ -159,12 +194,13 @@ class DeltaModel:
                 bound_is_formal=False,
             )
             drift_result = DriftResult(0.0, False, {}, "none")
+            reason = "pac_formal_gate" if pac_gate_triggered and not spectral_gate else "spectral_bound_exceeded"
             result = DeltaUpdateResult(
                 task_id=self._task_id,
                 decision="BOUND_EXCEEDED",
                 recommended_action="full_retrain",
                 confidence=1.0,
-                oracle=self._oracle_payload(pre_risk_estimate, post_drift_realized, False),
+                oracle=self._oracle_payload(pre_risk_estimate, post_drift_realized, False, pac_style),
                 drift=self._drift_payload(drift_result),
                 train=self._train_payload(
                     TrainArtifacts(
@@ -178,6 +214,8 @@ class DeltaModel:
                     )
                 ),
                 compute_savings_percent=0.0,
+                safe_to_deploy=False,
+                formal_guarantee=False,
             )
             self._record_result(result)
             self._task_id += 1
@@ -204,6 +242,14 @@ class DeltaModel:
             )
             drift_result = DriftResult(0.0, False, {}, "none")
 
+        # Compute PAC equivalence bound post-training for reporting.
+        pac_equivalence: OracleEstimate | None = None
+        if (snapshot_before is not None
+                and hasattr(self._safety_oracle, "pac_equivalence_bound")):
+            pac_equivalence = self._safety_oracle.pac_equivalence_bound(
+                snapshot_before, snapshot_after
+            )
+
         decision = self._deploy_policy.decide(
             pre_risk_estimate.value,
             post_drift_realized.value,
@@ -215,15 +261,35 @@ class DeltaModel:
             ),
         )
 
+        # formal_guarantee: True only when IW is on, PAC bound is tight,
+        # and the decision is safe — mirrors runner.py line 944 exactly.
+        iw_on = bool(getattr(self.train_config, "enable_importance_weighting", False))
+        formal_guarantee = bool(
+            self._task_id > 0
+            and iw_on
+            and (
+                (pac_equivalence is not None
+                 and pac_equivalence.bound_is_formal
+                 and pac_equivalence.value <= pac_gate_tolerance)
+                or (pac_style is not None
+                    and pac_style.bound_is_formal
+                    and pac_style.value <= pac_gate_tolerance)
+            )
+            and decision.state in {"SAFE_DELTA", "CAUTIOUS_DELTA"}
+        )
+        safe_to_deploy = decision.state in {"SAFE_DELTA", "CAUTIOUS_DELTA"}
+
         result = DeltaUpdateResult(
             task_id=self._task_id,
             decision=decision.state,
             recommended_action=decision.recommended_action,
             confidence=float(decision.confidence),
-            oracle=self._oracle_payload(pre_risk_estimate, post_drift_realized, bool(decision.bound_held)),
+            oracle=self._oracle_payload(pre_risk_estimate, post_drift_realized, bool(decision.bound_held), pac_style, pac_equivalence),
             drift=self._drift_payload(drift_result),
             train=self._train_payload(artifacts),
             compute_savings_percent=float(decision.compute_savings_percent),
+            safe_to_deploy=safe_to_deploy,
+            formal_guarantee=formal_guarantee,
         )
         self._snapshot = snapshot_after
         self._record_result(result)
@@ -292,15 +358,19 @@ class DeltaModel:
     def summary(self) -> str:
         lines = [
             f"DeltaModel  tasks={len(self._history)}  classes={self._model.classifier.num_classes}  device={self.device.type}",
-            "  task  decision           drift    saved%   action",
+            "  task  decision           drift    saved%   safe  formal  action",
         ]
         for entry in self._history:
+            safe = "✓" if entry.get("safe_to_deploy") else "✗"
+            formal = "✓" if entry.get("formal_guarantee") else "✗"
             lines.append(
                 "  "
                 f"{entry['task_id']:>4}  "
                 f"{entry['decision']:<16}  "
                 f"{float(entry['drift']['shift_score']):>6.4f}  "
                 f"{float(entry['compute_savings_percent']):>6.1f}%  "
+                f"{safe:>4}  "
+                f"{formal:>6}  "
                 f"{entry['recommended_action']}"
             )
         return "\n".join(lines)
@@ -329,6 +399,8 @@ class DeltaModel:
                 "decision": result.decision,
                 "recommended_action": result.recommended_action,
                 "confidence": float(result.confidence),
+                "safe_to_deploy": bool(result.safe_to_deploy),
+                "formal_guarantee": bool(result.formal_guarantee),
                 "oracle": result.oracle,
                 "drift": result.drift,
                 "train": result.train,
@@ -349,14 +421,31 @@ class DeltaModel:
         pre_risk_estimate: OracleEstimate,
         post_drift_realized: OracleEstimate,
         bound_held: bool,
+        pac_style: OracleEstimate | None = None,
+        pac_equivalence: OracleEstimate | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "risk_estimate_pre": float(pre_risk_estimate.value),
             "drift_realized_post": float(post_drift_realized.value),
             "risk_estimate_held": bool(bound_held),
             "bound_type": pre_risk_estimate.bound_type,
             "bound_is_formal": bool(pre_risk_estimate.bound_is_formal),
         }
+        if pac_style is not None:
+            payload["pac_style_gap"] = {
+                "value": float(pac_style.value),
+                "delta": pac_style.delta,
+                "bound_type": pac_style.bound_type,
+                "bound_is_formal": bool(pac_style.bound_is_formal),
+            }
+        if pac_equivalence is not None:
+            payload["pac_equivalence_bound"] = {
+                "value": float(pac_equivalence.value),
+                "delta": pac_equivalence.delta,
+                "bound_type": pac_equivalence.bound_type,
+                "bound_is_formal": bool(pac_equivalence.bound_is_formal),
+            }
+        return payload
 
     @staticmethod
     def _drift_payload(drift_result: DriftResult) -> dict[str, Any]:

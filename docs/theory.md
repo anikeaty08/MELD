@@ -17,7 +17,12 @@ For each past class `c`, MELD stores:
 - Curvature approximation: diagonal Fisher for all params, plus K-FAC factors
   `(A_l, G_l)` for selected final linear layers
 
-No raw image tensors are retained or replayed.
+A fixed anchor budget of at most `anchors_per_class` (default 20) raw input
+tensors per class is retained for backbone re-encoding inside the geometry
+loss. This is O(classes) storage — it does not grow with historical data
+volume and is not proportional replay. All other old-task information is
+represented only through per-class Gaussian statistics, Fisher information,
+and classifier weights. No full training batches are stored or replayed.
 
 ## 2) Pre-training risk estimate
 
