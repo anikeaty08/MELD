@@ -16,6 +16,7 @@ class TaskSnapshot:
     class_means: dict[int, np.ndarray]
     class_covs: dict[int, np.ndarray]
     class_anchors: dict[int, np.ndarray]
+    class_anchor_inputs: dict[int, np.ndarray]
     class_anchor_logits: dict[int, np.ndarray]
     classifier_norms: dict[int, float]
     fisher_diagonal: np.ndarray
@@ -64,6 +65,7 @@ class Decision:
     compute_savings_percent: float
     confidence: float
     recommended_action: str
+    formal_guarantee: bool = False
 
 
 @dataclass(slots=True)
@@ -73,6 +75,8 @@ class OracleEstimate:
     calibrated: bool
     bound_is_formal: bool
     delta: float | None = None
+    fisher_saturated: bool = False
+    derivation: dict[str, Any] | None = None
 
 
 VALID_DECISION_STATES = {

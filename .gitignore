@@ -2,21 +2,33 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
+*.so
 
 # Virtualenvs and local dependency bundles
 .venv/
 .deps/
+env/
+venv/
 
 # Test and tooling output
 .pytest_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+.mypy_cache/
+.pyre/
+.hypothesis/
+.pytest_tmp/
+ptmp_*/
 
 # Build artifacts
 build/
 dist/
 *.egg-info/
+*.egg
+pip-wheel-metadata/
 
 # Runtime outputs
 results.json
@@ -25,13 +37,25 @@ experiment.log
 results_cifar10_big_check.json
 results_cifar10_smoke.json  
 results_cifar10_hard_pretrained.json
+results_*.json
+real_cifar_*.json
 meld_results.db
 tmp_smoke_results.db
+*.db
+*.sqlite
+*.sqlite3
+*.tmp
+*.log
 
 # Dataset and large local assets
 data/
+CIFAR-10-C.tar
+CIFAR10-C/
+CIFAR-10-C/
 
 # Reference clones and local scratch files
 _delta_ref/
-
-tests/
+final.txt
+solnnn
+prompt
+test_backbone_pretrained.py

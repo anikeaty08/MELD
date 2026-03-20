@@ -14,9 +14,13 @@ def derive_train_config(snapshot: TaskSnapshot, base_config: Any, protection_lev
     fisher_max = max(float(snapshot.fisher_eigenvalue_max), 1e-6)
     fisher_mean = max(float(np.mean(snapshot.fisher_diagonal)) if snapshot.fisher_diagonal.size else 1e-6, 1e-6)
     scale = max(0.0, min(1.0, float(protection_level)))
+    lambda_geometry = max(
+        float(base_config.lambda_geometry) * 0.1,
+        (1.0 + scale) / fisher_max,
+    )
     return replace(
         base_config,
-        lambda_geometry=(1.0 + scale) / fisher_max,
+        lambda_geometry=lambda_geometry,
         lambda_ewc=(fisher_max / fisher_mean) * (0.5 + scale),
         geometry_decay=max(0.1, float(base_config.geometry_decay) / (1.0 + scale)),
     )

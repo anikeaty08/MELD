@@ -18,7 +18,7 @@ from .interfaces.base import DriftDetector, ManifoldUpdater
 @dataclass(slots=True)
 class TrainConfig:
     backbone: str = "resnet32"
-    pretrained_backbone: bool = False
+    pretrained_backbone: bool = True
     incremental_strategy: str = "geometry"
 
     epochs: int = 30
@@ -27,18 +27,18 @@ class TrainConfig:
     lr: float = 0.1
     momentum: float = 0.9
     weight_decay: float = 5e-4
-    freeze_bn_stats: bool = True
+    freeze_bn_stats: bool = False
 
-    lambda_geometry: float = 0.5
-    lambda_ewc: float = 0.3
+    lambda_geometry: float = 5.0
+    lambda_ewc: float = 1.0
     lambda_kd: float = 1.0
     kd_temperature: float = 2.0
     geometry_decay: float = 0.3
     analytic_ridge: float = 1e-3
     enable_importance_weighting: bool = True
-    label_smoothing: float = 0.0
-    cutmix_alpha: float = 0.0
-    max_grad_norm: float = 0.5
+    label_smoothing: float = 0.1
+    cutmix_alpha: float = 1.0
+    max_grad_norm: float = 1.0
     use_imprinting: bool = True
     imprinting_max_samples_per_class: int = 64
     auto_scale_safe_update: bool = True
@@ -46,7 +46,7 @@ class TrainConfig:
 
     use_ema_fisher: bool = True
     fisher_ema_decay: float = 0.9
-    auto_derive_hparams: bool = False
+    auto_derive_hparams: bool = True
     protection_level: float = 0.5
 
     full_retrain_epochs: int | None = None
@@ -60,12 +60,14 @@ class MELDConfig:
     classes_per_task: int = 5
     prefer_cuda: bool = False
     bound_tolerance: float = 10.0
+    pac_gate_tolerance: float = 0.1
     shift_threshold: float = 0.3
     data_root: Path = Path("./data")
+    cifar_c_path: Path | None = None
     database_path: Path | None = Path("./meld_results.db")
     seed: int = 7
     full_retrain_interval: int = 3
-    run_robustness_eval: bool = False
+    run_robustness_eval: bool = True
     run_avalanche_baselines: bool = False
     train: TrainConfig = field(default_factory=TrainConfig)
 

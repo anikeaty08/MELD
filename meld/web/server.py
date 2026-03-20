@@ -66,12 +66,26 @@ ROOT_TEMPLATE = """
       const xs = timeline.map(p => Number(p.task_id));
       const ys1 = timeline.map(p => Number(p.risk_estimate_pre || 0));
       const ys2 = timeline.map(p => Number(p.drift_realized_post || 0));
-      const yMax = Math.max(1e-6, ...ys1, ...ys2);
+      const ys3 = timeline.map(p =>
+        p.pac_style_gap && p.pac_style_gap.value != null ? Number(p.pac_style_gap.value) : null
+      );
+      const tolerance = Number((data.config && data.config.bound_tolerance) || 0);
+      const finiteYs3 = ys3.filter(v => v !== null);
+      const yMax = Math.max(1e-6, ...ys1, ...ys2, ...finiteYs3, tolerance);
       const margin = 30;
       const w = canvas.width - margin * 2;
       const h = canvas.height - margin * 2;
       function xPx(i) { return margin + (w * i / Math.max(1, xs.length - 1)); }
       function yPx(y) { return margin + h - (h * y / yMax); }
+      ctx.fillStyle = "rgba(0, 200, 0, 0.08)";
+      ctx.fillRect(margin, margin, w, h);
+      if (tolerance > 0) {
+        const tolY = yPx(tolerance);
+        ctx.fillStyle = "rgba(220, 50, 50, 0.10)";
+        ctx.fillRect(margin, margin, w, Math.max(0, tolY - margin));
+        ctx.fillStyle = "rgba(0, 180, 0, 0.10)";
+        ctx.fillRect(margin, tolY, w, margin + h - tolY);
+      }
       ctx.strokeStyle = "#999";
       ctx.beginPath();
       ctx.moveTo(margin, margin);
@@ -90,8 +104,17 @@ ROOT_TEMPLATE = """
       }
       drawLine(ys1, "#d33");
       drawLine(ys2, "#36c");
+      if (finiteYs3.length) {
+        drawLine(ys3.map(v => v == null ? 0 : v), "#f80");
+      }
+      timeline.forEach((p, i) => {
+        const label = String(p.decision_state || "");
+        if (!label) return;
+        ctx.fillStyle = p.risk_estimate_held ? "#2a2" : "#d33";
+        ctx.fillText(label, xPx(i) - 18, margin + h + 14);
+      });
       ctx.fillStyle = "#000";
-      ctx.fillText("red: risk_estimate_pre, blue: drift_realized_post", margin, 16);
+      ctx.fillText("red: risk_estimate_pre, blue: drift_realized_post, orange: pac_style_gap", margin, 16);
     }
     refreshBoundChart();
     setInterval(refreshBoundChart, 2000);

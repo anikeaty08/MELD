@@ -157,6 +157,8 @@ class BenchmarkRunner:
                 forward_transfer_top1 = float(ft_metrics["top1"])
 
             snapshot_before = None
+            pre_pac_style = None
+            pac_gate_triggered = False
             pre_risk_estimate = OracleEstimate(
                 value=0.0,
                 bound_type="empirical_spectral",
@@ -188,6 +190,11 @@ class BenchmarkRunner:
                 else:
                     task_train_config = self.config.train
                 pretrain_shift = self._pretraining_shift(snapshot_before, model, task_loader)
+                if pretrain_shift is not None and pretrain_shift.shift_detected:
+                    mmd_ratio = float(pretrain_shift.shift_score) / max(1e-6, float(self.config.shift_threshold))
+                    self.snapshot_strategy._ema_decay = float(
+                        np.clip(base_decay / (1.0 + 2.0 * mmd_ratio), 0.05, 0.95)
+                    )
                 if self._uses_frozen_analytic(task_id):
                     pre_risk_estimate = OracleEstimate(
                         value=0.0,
@@ -202,11 +209,19 @@ class BenchmarkRunner:
                         task_train_config,
                         pre_risk_estimate,
                     )
+                if hasattr(self.safety_oracle, "pac_style_gap"):
+                    pre_pac_style = self.safety_oracle.pac_style_gap(snapshot_before)
+                    pac_gate_triggered = bool(
+                        pre_pac_style.bound_is_formal
+                        and pre_pac_style.value > float(getattr(self.config, "pac_gate_tolerance", 0.1))
+                    )
             else:
                 task_train_config = self._base_train_config()
                 pretrain_shift = None
 
-            if task_id > 0 and pre_risk_estimate.value > self.config.bound_tolerance:
+            if task_id > 0 and (
+                pre_risk_estimate.value > self.config.bound_tolerance or pac_gate_triggered
+            ):
                 delta_artifacts = TrainArtifacts(
                     epochs_run=0,
                     lambda_schedule=[],
@@ -234,10 +249,15 @@ class BenchmarkRunner:
                     bound_held=False,
                     shift_score=0.0,
                     shift_detected=False,
-                    reason="pre-training safety bound exceeded tolerance before training",
+                    reason=(
+                        "formal PAC gate exceeded tolerance before training"
+                        if pac_gate_triggered
+                        else "pre-training safety bound exceeded tolerance before training"
+                    ),
                     compute_savings_percent=0.0,
                     confidence=1.0,
                     recommended_action="full_retrain",
+                    formal_guarantee=False,
                 )
             else:
                 delta_updater = self._delta_updater_for_task(task_id)
@@ -352,6 +372,7 @@ class BenchmarkRunner:
                     cil_metrics=cil_metrics,
                     train_artifacts=delta_artifacts,
                     pretrain_shift=pretrain_shift,
+                    pre_pac_style=pre_pac_style,
                 )
                 results["tasks"].append(task_result)
                 results["bounds_timeline"].append(
@@ -362,6 +383,8 @@ class BenchmarkRunner:
                         "risk_estimate_held": bool(decision.bound_held if task_id > 0 else True),
                         "bound_type": pre_risk_estimate.bound_type,
                         "bound_is_formal": pre_risk_estimate.bound_is_formal,
+                        "pac_style_gap": task_result["oracle"].get("pac_style_gap"),
+                        "decision_state": decision.state,
                     }
                 )
                 results["epoch_history"].append(
@@ -450,6 +473,7 @@ class BenchmarkRunner:
                 cil_metrics=cil_metrics,
                 train_artifacts=delta_artifacts,
                 pretrain_shift=pretrain_shift,
+                pre_pac_style=pre_pac_style,
             )
             results["tasks"].append(task_result)
             results["bounds_timeline"].append(
@@ -460,6 +484,8 @@ class BenchmarkRunner:
                     "risk_estimate_held": bool(decision.bound_held if task_id > 0 else True),
                     "bound_type": pre_risk_estimate.bound_type,
                     "bound_is_formal": pre_risk_estimate.bound_is_formal,
+                    "pac_style_gap": task_result["oracle"].get("pac_style_gap"),
+                    "decision_state": decision.state,
                 }
             )
             results["epoch_history"].append(
@@ -480,13 +506,12 @@ class BenchmarkRunner:
             last_drift_score = float(drift_result.shift_score)
 
         results["status"] = "completed"
-        results["final_summary"] = self._summarize(results["tasks"])
         if bool(getattr(self.config, "run_robustness_eval", False)):
             try:
                 results["robustness"] = evaluate_cifar_c(
                     model,
                     dataset=self.config.dataset,
-                    data_root=self.config.data_root,
+                    data_root=Path(getattr(self.config, "cifar_c_path", None) or self.config.data_root),
                     device=self.device,
                     batch_size=self.config.train.batch_size,
                 )
@@ -497,6 +522,7 @@ class BenchmarkRunner:
                 config=self.config,
                 device=self.device,
             )
+        results["final_summary"] = self._summarize(results["tasks"], results.get("robustness"))
         self._write_results(results_path, results)
         return results
 
@@ -889,6 +915,7 @@ class BenchmarkRunner:
         cil_metrics: dict[str, Any] | None = None,
         train_artifacts: TrainArtifacts | None = None,
         pretrain_shift: DriftResult | None = None,
+        pre_pac_style: OracleEstimate | None = None,
     ) -> dict[str, Any]:
         if (
             task_id > 0
@@ -899,7 +926,9 @@ class BenchmarkRunner:
             calibrated_estimate = self.safety_oracle.empirical_calibrated_estimate(snapshot, self.config.train)
         else:
             calibrated_estimate = None
-        if task_id > 0 and hasattr(self.safety_oracle, "pac_style_gap") and snapshot is not None:
+        if pre_pac_style is not None:
+            pac_style = pre_pac_style
+        elif task_id > 0 and hasattr(self.safety_oracle, "pac_style_gap") and snapshot is not None:
             pac_style = self.safety_oracle.pac_style_gap(snapshot)
         else:
             pac_style = None
@@ -912,6 +941,15 @@ class BenchmarkRunner:
             pac_equivalence = self.safety_oracle.pac_equivalence_bound(snapshot_before, snapshot)
         else:
             pac_equivalence = None
+        decision.formal_guarantee = bool(
+            task_id > 0
+            and bool(getattr(self.config.train, "enable_importance_weighting", False))
+            and (
+                (pac_equivalence is not None and pac_equivalence.bound_is_formal and pac_equivalence.value <= float(getattr(self.config, "pac_gate_tolerance", 0.1)))
+                or (pac_style is not None and pac_style.bound_is_formal and pac_style.value <= float(getattr(self.config, "pac_gate_tolerance", 0.1)))
+            )
+            and decision.state in {"SAFE_DELTA", "CAUTIOUS_DELTA"}
+        )
         fc = np.asarray(full_metrics["confusion_matrix"])
         if delta_metrics is not None:
             dc = np.asarray(delta_metrics["confusion_matrix"])
@@ -959,12 +997,16 @@ class BenchmarkRunner:
                 "bound_type": pre_risk_estimate.bound_type,
                 "calibrated": pre_risk_estimate.calibrated,
                 "bound_is_formal": pre_risk_estimate.bound_is_formal,
+                "fisher_saturated": pre_risk_estimate.fisher_saturated,
+                "derivation": pre_risk_estimate.derivation,
                 "empirical_calibrated_estimate": (
                     {
                         "value": calibrated_estimate.value,
                         "bound_type": calibrated_estimate.bound_type,
                         "calibrated": calibrated_estimate.calibrated,
                         "bound_is_formal": calibrated_estimate.bound_is_formal,
+                        "fisher_saturated": calibrated_estimate.fisher_saturated,
+                        "derivation": calibrated_estimate.derivation,
                     }
                     if calibrated_estimate is not None
                     else None
@@ -976,6 +1018,7 @@ class BenchmarkRunner:
                         "bound_type": pac_style.bound_type,
                         "calibrated": pac_style.calibrated,
                         "bound_is_formal": pac_style.bound_is_formal,
+                        "derivation": pac_style.derivation,
                     }
                     if pac_style is not None
                     else None
@@ -987,6 +1030,7 @@ class BenchmarkRunner:
                         "bound_type": pac_equivalence.bound_type,
                         "calibrated": pac_equivalence.calibrated,
                         "bound_is_formal": pac_equivalence.bound_is_formal,
+                        "derivation": pac_equivalence.derivation,
                     }
                     if pac_equivalence is not None
                     else None
@@ -1019,20 +1063,42 @@ class BenchmarkRunner:
             },
         }
 
-    def _summarize(self, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    def _summarize(
+        self,
+        tasks: list[dict[str, Any]],
+        robustness: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not tasks:
             return {}
         delta_top1s = [t["delta"].get("top1") for t in tasks if isinstance(t.get("delta"), dict) and t["delta"].get("top1") is not None]
+        delta_eces = [t["delta"].get("ece") for t in tasks if isinstance(t.get("delta"), dict) and t["delta"].get("ece") is not None]
+        full_eces = [t["full_retrain"]["ece"] for t in tasks if t["full_retrain"].get("ece") is not None]
         eq_gaps = [t.get("equivalence_gap") for t in tasks if t.get("equivalence_gap") is not None]
-        return {
+        summary = {
             "mean_delta_top1": float(np.mean(delta_top1s)) if delta_top1s else None,
             "mean_full_retrain_top1": float(np.mean([t["full_retrain"]["top1"] for t in tasks])),
+            "mean_delta_ece": float(np.mean(delta_eces)) if delta_eces else None,
+            "mean_full_retrain_ece": float(np.mean(full_eces)) if full_eces else None,
             "mean_equivalence_gap": float(np.mean(eq_gaps)) if eq_gaps else None,
             "mean_compute_savings": float(np.mean([t["compute_savings_percent"] for t in tasks])),
             "decisions": [t["decision"]["state"] for t in tasks],
             "total_wall_time_delta": float(np.sum([float(t["delta"].get("wall_time_seconds", 0.0)) for t in tasks if isinstance(t.get("delta"), dict)])),
             "total_wall_time_full_retrain": float(np.sum([t["full_retrain"]["wall_time_seconds"] for t in tasks])),
         }
+        if summary["mean_delta_ece"] is not None and summary["mean_full_retrain_ece"] is not None:
+            summary["ece_preserved"] = bool(
+                summary["mean_delta_ece"] <= (summary["mean_full_retrain_ece"] + 0.02)
+            )
+        else:
+            summary["ece_preserved"] = None
+        if robustness and robustness.get("status") == "completed":
+            mean_robustness = robustness.get("mean_top1")
+            summary["mean_robustness_accuracy"] = mean_robustness
+            if mean_robustness is not None and summary["mean_full_retrain_top1"] is not None:
+                summary["robustness_gap"] = float(summary["mean_full_retrain_top1"] - mean_robustness)
+            else:
+                summary["robustness_gap"] = None
+        return summary
 
     def _seed_everything(self, seed: int) -> None:
         import random as _random
@@ -1049,8 +1115,10 @@ class BenchmarkRunner:
             "num_tasks": self.config.num_tasks,
             "classes_per_task": self.config.classes_per_task,
             "bound_tolerance": self.config.bound_tolerance,
+            "pac_gate_tolerance": self.config.pac_gate_tolerance,
             "shift_threshold": self.config.shift_threshold,
             "prefer_cuda": self.config.prefer_cuda,
+            "cifar_c_path": str(self.config.cifar_c_path) if getattr(self.config, "cifar_c_path", None) else None,
             "database_path": str(self.config.database_path) if getattr(self.config, "database_path", None) else None,
             "seed": self.config.seed,
             "train": asdict(self.config.train),

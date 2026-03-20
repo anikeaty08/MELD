@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -197,6 +198,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                         eta_min=lr / 25.0,
                     )
 
+        effective_refresh = min(self.geometry_refresh_interval, max(1, steps_per_epoch))
         start = time.time()
         lambda_schedule: list[float] = []
         geo_hist: list[float] = []
@@ -266,9 +268,9 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 ewc = torch.tensor(0.0, device=device)
 
                 if snapshot is not None and snapshot.class_means:
-                    if bidx % self.geometry_refresh_interval == 0:
+                    if bidx % effective_refresh == 0:
                         cached_geo = self._geometry_loss(model, snapshot, device, embeddings.dtype, lam_kd, kd_temp)
-                    geo = cached_geo if bidx % self.geometry_refresh_interval == 0 else cached_geo.detach()
+                    geo = cached_geo if bidx % effective_refresh == 0 else cached_geo.detach()
                     ewc = self._ewc_loss(ewc_params, ewc_param_names, reference, fisher_splits, snapshot) * lam_ewc
                     geo = torch.nan_to_num(geo, nan=0.0, posinf=1e4, neginf=0.0)
                     ewc = torch.nan_to_num(ewc, nan=0.0, posinf=1e4, neginf=0.0)
@@ -350,6 +352,14 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                     if bad_epochs >= early_patience:
                         break
 
+        projected_fraction = float(projected_steps / max(1, total_steps))
+        if projected_fraction > 0.8:
+            warnings.warn(
+                "PCGrad projected more than 80% of steps. Regularisation is likely losing conflicts; "
+                "consider increasing lambda_geometry/lambda_ewc or training the base model longer.",
+                stacklevel=2,
+            )
+
         return model, TrainArtifacts(
             epochs_run=epochs_run if epochs_run > 0 else epochs,
             lambda_schedule=lambda_schedule[:epochs_run] if epochs_run > 0 else lambda_schedule,
@@ -357,7 +367,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             ewc_loss_per_epoch=ewc_hist[:epochs_run] if epochs_run > 0 else ewc_hist,
             ce_loss_per_epoch=ce_hist[:epochs_run] if epochs_run > 0 else ce_hist,
             train_accuracy_per_epoch=train_acc_hist[:epochs_run] if epochs_run > 0 else train_acc_hist,
-            projected_step_fraction=float(projected_steps / max(1, total_steps)),
+            projected_step_fraction=projected_fraction,
             wall_time_seconds=time.time() - start,
             loss_history=loss_hist,
         )
@@ -414,13 +424,21 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
 
         for cid in snapshot.class_ids:
             anch_np = snapshot.class_anchors.get(cid)
+            anchor_inputs_np = snapshot.class_anchor_inputs.get(cid)
             logit_np = snapshot.class_anchor_logits.get(cid)
             if anch_np is None or logit_np is None or len(anch_np) == 0 or teacher_weight.numel() == 0:
                 continue
 
-            anchors = torch.from_numpy(anch_np).to(device=device, dtype=dtype)
             teacher_logits = torch.from_numpy(logit_np).to(device=device, dtype=dtype)
-            current_logits = model.classifier(anchors).index_select(1, old_class_ids)
+            if anchor_inputs_np is not None and len(anchor_inputs_np) > 0:
+                anchor_inputs = torch.from_numpy(anchor_inputs_np).to(device=device, dtype=dtype)
+                fresh_embeddings = model.embed(anchor_inputs)
+                current_logits = model.classifier(fresh_embeddings).index_select(1, old_class_ids)
+                anchor_count = fresh_embeddings.size(0)
+            else:
+                anchors = torch.from_numpy(anch_np).to(device=device, dtype=dtype)
+                current_logits = model.classifier(anchors).index_select(1, old_class_ids)
+                anchor_count = anchors.size(0)
             current_logits = torch.nan_to_num(current_logits, nan=0.0, posinf=1e4, neginf=-1e4)
             teacher_logits = torch.nan_to_num(teacher_logits, nan=0.0, posinf=1e4, neginf=-1e4)
             anchor_kd = _kd_loss(current_logits, teacher_logits, kd_temp)
@@ -429,7 +447,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             std = torch.sqrt(
                 torch.from_numpy(snapshot.class_covs[cid]).to(device=device, dtype=dtype).clamp_min(1e-6)
             )
-            sample_count = max(1, min(self.manifold_samples_per_class, anchors.size(0)))
+            sample_count = max(1, min(self.manifold_samples_per_class, anchor_count))
             gaussian_samples = mean.unsqueeze(0) + torch.randn(
                 sample_count,
                 mean.numel(),

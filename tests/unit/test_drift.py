@@ -11,6 +11,7 @@ def _snapshot(mean: float) -> TaskSnapshot:
         class_means={0: np.array([mean, 0.0])},
         class_covs={0: np.array([1.0, 1.0])},
         class_anchors={0: np.array([[mean, 0.0]])},
+        class_anchor_inputs={0: np.zeros((1, 3, 32, 32), dtype=np.float32)},
         class_anchor_logits={0: np.array([[1.0]])},
         classifier_norms={0: 1.0},
         fisher_diagonal=np.array([0.1, 0.2]),

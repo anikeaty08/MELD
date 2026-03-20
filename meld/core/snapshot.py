@@ -53,6 +53,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                 name for name, param in model.named_parameters() if param.requires_grad
             ]
         class_embeddings: dict[int, list[np.ndarray]] = defaultdict(list)
+        class_inputs: dict[int, list[np.ndarray]] = defaultdict(list)
         class_logits: dict[int, list[np.ndarray]] = defaultdict(list)
         input_feature_batches: list[np.ndarray] = []
         total_samples = 0
@@ -75,6 +76,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                 for i, target in enumerate(targets_list):
                     tid = int(target)
                     if tid in valid_class_ids:
+                        class_inputs[tid].append(inputs[i].detach().cpu().numpy())
                         class_embeddings[tid].append(embeddings[i])
                         class_logits[tid].append(logits[i])
                         total_samples += 1
@@ -82,13 +84,21 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         class_means: dict[int, np.ndarray] = {}
         class_covs: dict[int, np.ndarray] = {}
         class_anchors: dict[int, np.ndarray] = {}
+        class_anchor_inputs: dict[int, np.ndarray] = {}
         class_anchor_logits: dict[int, np.ndarray] = {}
         available_class_ids: list[int] = []
         for class_id in valid_class_ids:
+            inputs_list = class_inputs.get(class_id, [])
             vectors_list = class_embeddings.get(class_id, [])
             logits_list = class_logits.get(class_id, [])
-            if not vectors_list or not logits_list:
+            if not inputs_list or not vectors_list or not logits_list:
                 continue
+            raw_inputs = np.nan_to_num(
+                np.stack(inputs_list, axis=0),
+                nan=0.0,
+                posinf=1e6,
+                neginf=-1e6,
+            ).astype(np.float32, copy=False)
             vectors = np.nan_to_num(np.stack(vectors_list, axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
             logits = np.nan_to_num(np.stack(logits_list, axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
             class_means[class_id] = np.nan_to_num(vectors.mean(axis=0), nan=0.0, posinf=1e6, neginf=-1e6).astype(
@@ -103,9 +113,11 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             anchor_count = min(self.anchors_per_class, len(vectors))
             if anchor_count > 0:
                 indices = np.linspace(0, len(vectors) - 1, num=anchor_count, dtype=int)
+                class_anchor_inputs[class_id] = raw_inputs[indices]
                 class_anchors[class_id] = vectors[indices]
                 class_anchor_logits[class_id] = logits[indices]
             else:
+                class_anchor_inputs[class_id] = raw_inputs[:0]
                 class_anchors[class_id] = vectors[:0]
                 class_anchor_logits[class_id] = logits[:0]
             available_class_ids.append(class_id)
@@ -179,7 +191,8 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         ]
         steps_per_epoch = max(1, math.ceil(max(1, len(dataloader.dataset)) / max(1, dataloader.batch_size or 1)))
         diag_eig_max = float(np.max(fisher_diagonal)) if fisher_diagonal.size else 0.0
-        fisher_eigenvalue_max = max(diag_eig_max, float(kfac_eig_max))
+        raw_max = max(diag_eig_max, float(kfac_eig_max))
+        fisher_eigenvalue_max = float(np.clip(raw_max, 0.0, 1000.0))
 
         return TaskSnapshot(
             task_id=task_id,
@@ -187,6 +200,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             class_means=class_means,
             class_covs=class_covs,
             class_anchors=class_anchors,
+            class_anchor_inputs=class_anchor_inputs,
             class_anchor_logits=class_anchor_logits,
             classifier_norms=model.classifier.all_norms(),
             fisher_diagonal=fisher_diagonal,
@@ -236,13 +250,24 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         total = 0
         criterion = nn.CrossEntropyLoss()
 
-        # K-FAC factors for the last 2 Linear layers (by module order).
+        # K-FAC factors for all sufficiently large Linear layers.
         linear_modules = [
             (name, module)
             for name, module in model.named_modules()
-            if isinstance(module, nn.Linear) and (not protected or f"{name}.weight" in protected)
+            if (
+                isinstance(module, nn.Linear)
+                and module.weight.numel() > 1000
+                and (not protected or f"{name}.weight" in protected)
+            )
         ]
-        kfac_modules = linear_modules[-2:] if len(linear_modules) >= 2 else linear_modules
+        if linear_modules:
+            kfac_modules = linear_modules
+        else:
+            kfac_modules = [
+                (name, module)
+                for name, module in model.named_modules()
+                if isinstance(module, nn.Linear) and (not protected or f"{name}.weight" in protected)
+            ]
         name_by_param = {p: n for n, p in model.named_parameters()}
 
         kfac_weight_param_names: list[str] = []

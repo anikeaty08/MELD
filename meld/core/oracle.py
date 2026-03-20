@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
 from ..interfaces.base import OracleEstimate, SafetyOracle, TaskSnapshot
+
+
+@dataclass(slots=True)
+class BoundDerivation:
+    name: str
+    assumptions: list[str]
+    reference_terms: list[str]
 
 
 class SpectralSafetyOracle(SafetyOracle):
@@ -35,11 +43,24 @@ class SpectralSafetyOracle(SafetyOracle):
             value = min(spectral, data_dependent)
         else:
             value = spectral
+        is_fisher_saturated = bool(snapshot.fisher_eigenvalue_max >= 999.0)
         estimate = OracleEstimate(
             value=value,
             bound_type="empirical_spectral",
             calibrated=False,
             bound_is_formal=False,
+            fisher_saturated=is_fisher_saturated,
+            derivation=asdict(
+                BoundDerivation(
+                    name="empirical_spectral",
+                    assumptions=[
+                        "Fisher spectral radius approximates local curvature",
+                        "Optimizer moves scale with lr * sqrt(total_steps * embedding_dim)",
+                        "Importance weighting may be enabled but is not required for this estimate",
+                    ],
+                    reference_terms=["lambda_max(F)", "lr", "sqrt(T*d)"],
+                )
+            ),
         )
         self._last_pre_risk_estimate = estimate
         return estimate
@@ -52,6 +73,8 @@ class SpectralSafetyOracle(SafetyOracle):
                 bound_type="empirical_spectral_calibrated",
                 calibrated=True,
                 bound_is_formal=False,
+                fisher_saturated=base.fisher_saturated,
+                derivation=base.derivation,
             )
         calibration = float(np.clip(np.mean(self._calibration_history), 0.05, 1.0))
         return OracleEstimate(
@@ -59,6 +82,8 @@ class SpectralSafetyOracle(SafetyOracle):
             bound_type="empirical_spectral_calibrated",
             calibrated=True,
             bound_is_formal=False,
+            fisher_saturated=base.fisher_saturated,
+            derivation=base.derivation,
         )
 
     def post_drift_realized(self, snapshot_before: TaskSnapshot, snapshot_after: TaskSnapshot) -> OracleEstimate:
@@ -104,6 +129,16 @@ class SpectralSafetyOracle(SafetyOracle):
             calibrated=False,
             bound_is_formal=True,
             delta=clipped_delta,
+            derivation=asdict(
+                BoundDerivation(
+                    name="pac_style_hoeffding",
+                    assumptions=[
+                        "IID concentration around empirical loss",
+                        "Hoeffding-style bounded-loss concentration",
+                    ],
+                    reference_terms=["sqrt(log(1/delta)/(2n))"],
+                )
+            ),
         )
 
     def pac_equivalence_bound(
@@ -133,6 +168,21 @@ class SpectralSafetyOracle(SafetyOracle):
             calibrated=False,
             bound_is_formal=True,
             delta=clipped_delta,
+            derivation=asdict(
+                BoundDerivation(
+                    name="pac_importance_weighted",
+                    assumptions=[
+                        "Importance weighting is applied to CE loss",
+                        "Weight variance captures density-ratio estimation noise",
+                        "Fisher spectral term upper-bounds curvature-induced drift",
+                    ],
+                    reference_terms=[
+                        "sqrt(Var(w)/n)",
+                        "lambda_max(F)*||theta_delta-theta_old||",
+                        "sqrt(log(1/delta)/(2n))",
+                    ],
+                )
+            ),
         )
 
     def pac_equivalence_gap(self, snapshot: TaskSnapshot | None = None, confidence: float = 0.95) -> tuple[float, float]:
