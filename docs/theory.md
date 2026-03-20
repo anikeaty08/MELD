@@ -80,5 +80,5 @@ formal guarantee would require proving that the importance-weighted delta loss
 concentrates around the full-data loss, which is left as future work.
 
 <div align="center">
-  <h3>with love Anikeat ❤️</h3>
+  <h3>with love 192❤️</h3>
 </div>

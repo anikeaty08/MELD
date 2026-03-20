@@ -494,5 +494,5 @@ Open tuning areas:
 - deeper Avalanche baseline coverage
 
 <div align="center">
-  <h3>with love Anikeat ❤️</h3>
+  <h3>with love 192 ❤️</h3>
 </div>

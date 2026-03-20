@@ -101,5 +101,5 @@ Then open [http://127.0.0.1:8080](http://127.0.0.1:8080).
 - The synthetic path is intentionally useful for smoke tests, API checks, and dashboard wiring.
 
 <div align="center">
-  <h3>with love Anikeat ❤️</h3>
+  <h3>with love 192 ❤️</h3>
 </div>
