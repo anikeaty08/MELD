@@ -1,5 +1,12 @@
 # MELD
 
+[![PyPI version](https://img.shields.io/pypi/v/meld-framework)](https://pypi.org/project/meld-framework/)
+[![Python](https://img.shields.io/pypi/pyversions/meld-framework)](https://pypi.org/project/meld-framework/)
+[![CI](https://img.shields.io/github/actions/workflow/status/anikeaty08/MELD/ci.yml?branch=main&label=tests)](https://github.com/anikeaty08/MELD/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-usage-blue)](https://github.com/anikeaty08/MELD/blob/main/docs/USAGE.md)
+[![Research Notes](https://img.shields.io/badge/research-theory_notes-8A2BE2)](https://github.com/anikeaty08/MELD/blob/main/docs/theory.md)
+[![GitHub](https://img.shields.io/badge/github-anikeaty08%2FMELD-black)](https://github.com/anikeaty08/MELD)
+
 MELD is a continual-learning framework for replay-free model updates on image
 and text classification tasks. It gives you a reusable runner, a Python API,
 CLI commands, safety checks before updates, drift audits after updates, and a
@@ -59,6 +66,30 @@ Module form works too:
 ```bash
 python -m meld.cli --help
 python -m meld.bootstrap --help
+```
+
+## From the repo
+
+If you are running MELD directly from a source checkout, the most reliable
+entrypoints are the module forms:
+
+```bash
+python -m meld.cli --help
+python -m meld.bootstrap --help
+```
+
+Synthetic smoke test from the repo:
+
+```bash
+python -m meld.cli \
+  --dataset synthetic \
+  --num-tasks 2 \
+  --classes-per-task 2 \
+  --epochs 1 \
+  --batch-size 8 \
+  --backbone resnet20 \
+  --num-workers 0 \
+  --results-path results_repo_smoke.json
 ```
 
 ## CLI usage
@@ -265,6 +296,7 @@ Current release checks used for this package:
 - `python -m pytest tests -q`
 - `python -m build`
 - `python -m twine check dist/*`
+- `python -m meld.cli --dataset synthetic --num-tasks 2 --classes-per-task 2 --epochs 1 --batch-size 8 --backbone resnet20 --num-workers 0 --results-path tests/.tmp_results/repo_synthetic_smoke.json`
 
 A GitHub Actions matrix is also included to exercise install and test flows on
 Windows, macOS, and Linux.
@@ -277,6 +309,7 @@ python -m pip install '.[dev]'
 
 ## Links
 
-- Homepage: https://github.com/anikeaty08/MELD
-- Repository: https://github.com/anikeaty08/MELD.git
-- Usage guide: https://github.com/anikeaty08/MELD/blob/main/docs/USAGE.md
+- PyPI: https://pypi.org/project/meld-framework/
+- Documentation: https://github.com/anikeaty08/MELD/blob/main/docs/USAGE.md
+- Research notes / theory: https://github.com/anikeaty08/MELD/blob/main/docs/theory.md
+- GitHub repository: https://github.com/anikeaty08/MELD
