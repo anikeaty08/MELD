@@ -248,7 +248,7 @@ function App() {
       <main className="app-shell loading-shell">
         <section className="hero-card">
           <p className="eyebrow">MELD Dashboard</p>
-          <h1>Loading workspace controls...</h1>
+          <h1>Loading continual-learning controls...</h1>
         </section>
       </main>
     );
@@ -333,10 +333,10 @@ function App() {
       <section className="hero-card">
         <div>
           <p className="eyebrow">React control room</p>
-          <h1>MELD benchmark launcher with early asset prep.</h1>
+          <h1>MELD continual-learning launcher with early asset prep.</h1>
           <p className="hero-copy">
-            Pick a dataset, see every backbone and text encoder choice, then warm requirements, datasets, and model
-            assets before the experiment starts.
+            Pick a supported dataset family, see every backbone and text encoder choice, then warm requirements,
+            datasets, and model assets before the experiment starts.
           </p>
         </div>
         <div className="hero-actions">
@@ -358,13 +358,13 @@ function App() {
       <section className="dashboard-grid">
         <div className="stack-column">
           <section className="panel">
-            <div className="panel-head">
-              <div>
-                <p className="eyebrow">Dataset library</p>
-                <h2>Every supported benchmark</h2>
+              <div className="panel-head">
+                <div>
+                  <p className="eyebrow">Dataset library</p>
+                  <h2>Supported benchmark families</h2>
+                </div>
+                <p className="panel-note">Click a card to load its recommended task layout and backbone.</p>
               </div>
-              <p className="panel-note">Click a card to load its recommended task layout and backbone.</p>
-            </div>
             <div className="tile-grid dataset-grid">
               {options.datasets.map((dataset) => {
                 const status = statusLookup(readiness?.datasets, dataset.id);

@@ -175,13 +175,13 @@ def _prepare_from_payload(payload: dict[str, Any]) -> tuple[Path, dict[str, Any]
     return data_root, normalized
 
 
-@app.get("/")
-def index() -> FileResponse | HTMLResponse:
+@app.get("/", response_model=None)
+def index():
     return _frontend_response()
 
 
-@app.get("/monitor")
-def monitor() -> FileResponse | HTMLResponse:
+@app.get("/monitor", response_model=None)
+def monitor():
     return _frontend_response()
 
 

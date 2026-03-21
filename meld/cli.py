@@ -11,33 +11,46 @@ from .core.snapshot import FisherManifoldSnapshot
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run MELD benchmarks.")
+    parser = argparse.ArgumentParser(
+        description="Run MELD continual-learning experiments.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--dataset",
         default="CIFAR-10",
         help=(
             "Dataset to use. Image: synthetic, CIFAR-10, CIFAR-100, TinyImageNet, STL-10. "
-            "Text: AGNews (4 cls), DBpedia (14 cls)."
+            "Text: AGNews (4 cls), DBpedia (14 cls), YahooAnswersNLP (10 cls)."
         ),
     )
-    parser.add_argument("--num-tasks", type=int, default=2)
-    parser.add_argument("--classes-per-task", type=int, default=5)
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--num-tasks", type=int, default=2, help="Number of incremental tasks to run.")
+    parser.add_argument("--classes-per-task", type=int, default=5, help="Classes introduced in each task.")
+    parser.add_argument("--epochs", type=int, default=5, help="Training epochs per task update.")
+    parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size for task training.")
+    parser.add_argument("--lr", type=float, default=0.1, help="Base learning rate for the updater.")
     parser.add_argument(
         "--backbone",
         default="auto",
         choices=["auto", "resnet20", "resnet32", "resnet44", "resnet56", "resnet18_imagenet", "text_encoder"],
+        help="Backbone family to use. 'auto' picks a dataset-appropriate default.",
     )
-    parser.add_argument("--pretrained-backbone", action="store_true")
-    parser.add_argument("--incremental-strategy", default="geometry", choices=["geometry", "frozen_analytic"])
+    parser.add_argument(
+        "--pretrained-backbone",
+        action="store_true",
+        help="Warm image backbones with pretrained weights when available.",
+    )
+    parser.add_argument(
+        "--incremental-strategy",
+        default="geometry",
+        choices=["geometry", "frozen_analytic"],
+        help="Incremental update strategy.",
+    )
     parser.add_argument(
         "--text-encoder-model",
         default="sentence-transformers/all-MiniLM-L6-v2",
         help="HuggingFace model for text backbone. Only used when --backbone text_encoder.",
     )
-    parser.add_argument("--base-epochs", type=int, default=None)
+    parser.add_argument("--base-epochs", type=int, default=None, help="Optional override for first-task epochs.")
     # Keep CLI default aligned with MELDConfig default (too-small values skip delta
     # training almost immediately and make comparisons misleading).
     parser.add_argument("--bound-tolerance", type=float, default=10.0)
@@ -52,11 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cutmix-alpha", type=float, default=0.0)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--fisher-samples", type=int, default=512)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--prefer-cuda", action="store_true")
-    parser.add_argument("--data-root", default="./data")
-    parser.add_argument("--database-path", default="meld_results.db")
-    parser.add_argument("--results-path", default="results.json")
+    parser.add_argument("--num-workers", type=int, default=0, help="Data loader worker count.")
+    parser.add_argument("--prefer-cuda", action="store_true", help="Use CUDA when it is available.")
+    parser.add_argument("--data-root", default="./data", help="Dataset cache and download directory.")
+    parser.add_argument("--database-path", default="meld_results.db", help="SQLite output path.")
+    parser.add_argument("--results-path", default="results.json", help="JSON results output path.")
     return parser
 
 

@@ -5,9 +5,26 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "meld-framework"
 version = "0.1.0"
-description = "MELD: Manifold-Equivalent Learning with Deployment guarantees"
+description = "Replay-free continual-learning framework for safe incremental model updates in vision and NLP."
 readme = "README.md"
 requires-python = ">=3.10"
+authors = [
+  {name = "anikeaty08"},
+]
+keywords = ["continual-learning", "incremental-learning", "class-incremental-learning", "pytorch", "nlp", "computer-vision"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "datasets>=2.19",
   "fastapi>=0.115",
@@ -24,6 +41,12 @@ dependencies = [
 Homepage = "https://github.com/anikeaty08/MELD"
 Repository = "https://github.com/anikeaty08/MELD.git"
 Issues = "https://github.com/anikeaty08/MELD/issues"
+Documentation = "https://github.com/anikeaty08/MELD/blob/main/docs/USAGE.md"
+
+[project.scripts]
+meld = "meld.cli:main"
+meld-bootstrap = "meld.bootstrap:main"
+meld-web = "meld.web.server:main"
 
 [project.optional-dependencies]
 benchmark = [

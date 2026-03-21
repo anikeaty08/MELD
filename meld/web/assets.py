@@ -19,7 +19,7 @@ from ..models.backbone import (
     resnet44,
     resnet56,
 )
-from .catalog import DATASET_OPTIONS, BACKBONE_OPTIONS, find_dataset_option, normalize_dataset_key
+from .catalog import DATASET_OPTIONS, find_dataset_option, normalize_dataset_key
 
 PREP_STATE_FILE = ".meld_prepare_state.json"
 

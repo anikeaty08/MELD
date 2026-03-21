@@ -1,64 +1,74 @@
 # Usage
 
-Repository: [anikeaty08/MELD](https://github.com/anikeaty08/MELD)
+MELD is a continual-learning framework for replay-free incremental-update
+workflows. The commands below assume that scope: class-incremental benchmarks,
+safe update checks, and experiment monitoring for supported vision and NLP
+tasks.
 
-## Virtual Environment
+## Install
 
-Use MELD from the project virtual environment.
+### PyPI
 
-### Windows PowerShell
+```bash
+pip install meld-framework
+```
 
-```powershell
+### Source checkout
+
+```bash
 git clone https://github.com/anikeaty08/MELD.git
 cd MELD
 python -m venv .venv
+```
+
+PowerShell:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install .
-python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
 ```
 
-### Windows CMD
-
-```bat
-git clone https://github.com/anikeaty08/MELD.git
-cd MELD
-python -m venv .venv
-.venv\Scripts\activate.bat
-python -m pip install --upgrade pip
-python -m pip install .
-python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
-```
-
-### macOS / Linux
+macOS / Linux:
 
 ```bash
-git clone https://github.com/anikeaty08/MELD.git
-cd MELD
-python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install .
-python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
 ```
 
-Activation alone does not install dependencies. The install happens when you run
-`python -m pip install .`.
+## Main entry points
 
-That install includes the MELD runtime plus `transformers` and `datasets`, so
-those packages are available automatically inside the project virtual
-environment.
-
-To exit:
+CLI:
 
 ```bash
-deactivate
+meld --help
 ```
 
-## Python API
+Bootstrap helper:
+
+```bash
+meld-bootstrap --help
+```
+
+Web dashboard:
+
+```bash
+meld-web
+```
+
+Module forms are also available:
+
+```bash
+python -m meld.cli --help
+python -m meld.bootstrap --help
+python -m meld.web.server
+```
+
+## Python API example
 
 ```python
-from meld.api import MELDConfig, TrainConfig, run
+from meld import MELDConfig, TrainConfig, run
 
 config = MELDConfig(
     dataset="synthetic",
@@ -76,34 +86,58 @@ results = run(config, results_path="results.json")
 print(results["final_summary"])
 ```
 
-## CLI
+## CLI example
 
 ```bash
-python -m meld.cli \
-  --dataset synthetic \
-  --num-tasks 2 \
-  --classes-per-task 2 \
+meld \
+  --dataset AGNews \
+  --num-tasks 1 \
+  --classes-per-task 4 \
   --epochs 1 \
   --batch-size 8 \
-  --backbone resnet20 \
+  --backbone text_encoder \
+  --text-encoder-model sentence-transformers/all-MiniLM-L6-v2 \
   --results-path results.json
 ```
 
-## Web
+## Dashboard workflow
 
-```bash
-python -m meld.web.server
-```
+The React dashboard at `http://127.0.0.1:8080` can:
 
-Then open [http://127.0.0.1:8080](http://127.0.0.1:8080).
+- launch new runs
+- stream logs and metrics
+- show all supported backbones and text encoders
+- install requirements from the current environment
+- pre-download supported datasets
+- warm model assets before launch
 
-## Dataset behavior
+## Dataset notes
 
-- `CIFAR-10` and `CIFAR-100` use Continuum from the active virtual environment.
-- Run `python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data` after install if you want the datasets ready before the first benchmark.
-- Other dataset names currently fall back to the synthetic incremental dataset for development.
-- The synthetic path is intentionally useful for smoke tests, API checks, and dashboard wiring.
+Supported runner datasets:
 
-<div align="center">
-  <h3>with love 192 ❤️</h3>
-</div>
+- `synthetic`
+- `CIFAR-10`
+- `CIFAR-100`
+- `STL-10`
+- `TinyImageNet`
+- `AGNews`
+- `DBpedia`
+- `YahooAnswersNLP`
+
+Bootstrap helper coverage:
+
+- `CIFAR-10`
+- `CIFAR-100`
+- `CIFAR-10-C`
+
+Dashboard preparation coverage:
+
+- `CIFAR-10`
+- `CIFAR-100`
+- `STL-10`
+- `AGNews`
+- `DBpedia`
+- `YahooAnswersNLP`
+
+`TinyImageNet` still requires a manually extracted `tiny-imagenet-200` folder
+inside the chosen data root.
