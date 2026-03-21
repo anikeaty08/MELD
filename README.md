@@ -1,25 +1,17 @@
 # MELD
 
-MELD is a domain-specific framework for continual-learning experiments and
-replay-free model updates. It focuses on pre-update safety checks, post-update
-drift auditing, and deployment-aware decision outputs for image and text
-benchmarks.
-
-
-It ships with a CLI and includes a React dashboard served by FastAPI for
-experiment launch, monitoring, and asset preparation.
-
-
+MELD is a continual-learning framework for replay-free model updates on image
+and text classification tasks. It gives you a reusable runner, a Python API,
+CLI commands, safety checks before updates, drift audits after updates, and a
+side-by-side comparison path against full retraining.
 
 MELD is a good fit when you want:
 
 - replay-free continual-learning experiments
 - safe incremental updates on new tasks
-- the option to compare delta updates against full retraining
-- vision and text benchmark runs with comparable outputs
-- a reusable runner and API that you can extend with your own datasets
-
-
+- direct comparison between delta updates and full retraining
+- built-in vision and NLP benchmark support
+- custom dataset adapters through Python hooks
 
 ## Install
 
@@ -55,21 +47,94 @@ python -m pip install .
 
 ## Quick start
 
-### Python API
+Check the installed commands:
+
+```bash
+meld --help
+meld-bootstrap --help
+```
+
+Module form works too:
+
+```bash
+python -m meld.cli --help
+python -m meld.bootstrap --help
+```
+
+## CLI usage
+
+Default compare mode on a small synthetic smoke run:
+
+```bash
+meld \
+  --dataset synthetic \
+  --num-tasks 2 \
+  --classes-per-task 2 \
+  --epochs 1 \
+  --batch-size 8 \
+  --backbone resnet20 \
+  --results-path results.json
+```
+
+Delta-only mode:
+
+```bash
+meld \
+  --dataset synthetic \
+  --num-tasks 2 \
+  --classes-per-task 2 \
+  --run-mode delta \
+  --epochs 1 \
+  --batch-size 8 \
+  --backbone resnet20 \
+  --results-path results_delta.json
+```
+
+Full-retrain mode:
+
+```bash
+meld \
+  --dataset synthetic \
+  --num-tasks 2 \
+  --classes-per-task 2 \
+  --run-mode full_retrain \
+  --epochs 1 \
+  --batch-size 8 \
+  --backbone resnet20 \
+  --results-path results_full_retrain.json
+```
+
+Text benchmark example:
+
+```bash
+meld \
+  --dataset AGNews \
+  --num-tasks 1 \
+  --classes-per-task 4 \
+  --epochs 1 \
+  --batch-size 8 \
+  --backbone text_encoder \
+  --text-encoder-model sentence-transformers/all-MiniLM-L6-v2 \
+  --num-workers 0 \
+  --results-path results_agnews.json
+```
+
+## Python API
 
 ```python
 from meld import MELDConfig, TrainConfig, run
 
 results = run(
     MELDConfig(
-        dataset="CIFAR-10",
-        num_tasks=5,
+        dataset="synthetic",
+        num_tasks=2,
         classes_per_task=2,
+        run_mode="compare",
+        bound_tolerance=10.0,
         train=TrainConfig(
-            backbone="resnet32",
-            epochs=5,
-            batch_size=64,
-            lr=0.01,
+            backbone="resnet20",
+            epochs=1,
+            batch_size=8,
         ),
     ),
     results_path="results.json",
@@ -78,40 +143,70 @@ results = run(
 print(results["final_summary"])
 ```
 
-You can choose the primary execution path with `run_mode`:
+Run modes:
 
 - `compare`: run MELD delta updates and a full-retrain baseline side by side
 - `delta`: run only the replay-free update path
 - `full_retrain`: always retrain on all seen task data
 
-### CLI
+## Dataset preparation
+
+Download benchmark assets before the first run:
 
 ```bash
-meld \
-  --dataset CIFAR-10 \
-  --num-tasks 5 \
-  --classes-per-task 2 \
-  --epochs 5 \
-  --batch-size 64 \
-  --lr 0.01 \
-  --results-path results.json
+meld-bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
 ```
 
-Equivalent module form:
+Bootstrap helper coverage:
 
-```bash
-python -m meld.cli --help
-```
+- `CIFAR-10`
+- `CIFAR-100`
+- `CIFAR-10-C`
+
+Runner dataset coverage:
+
+- `synthetic`
+- `CIFAR-10`
+- `CIFAR-100`
+- `STL-10`
+- `TinyImageNet`
+- `AGNews`
+- `DBpedia`
+- `YahooAnswersNLP`
+
+`TinyImageNet` still expects a manually extracted `tiny-imagenet-200` folder
+inside the selected data root.
+
+## Backbones
+
+Available backbone choices:
+
+- `auto`
+- `resnet20`
+- `resnet32`
+- `resnet44`
+- `resnet56`
+- `resnet18_imagenet`
+- `text_encoder`
+
+Common text encoders:
+
+- `sentence-transformers/all-MiniLM-L6-v2`
+- `sentence-transformers/all-MiniLM-L12-v2`
+- `sentence-transformers/all-mpnet-base-v2`
+- `sentence-transformers/paraphrase-MiniLM-L6-v2`
+- `bert-base-uncased`
+- `distilbert-base-uncased`
 
 ## Custom datasets
 
-MELD ships with built-in benchmark adapters, but you can also register your own
-task bundle provider through the Python API. A provider returns a list of
-`(train_dataset, test_dataset)` pairs, one pair per continual-learning task.
+You can register your own dataset provider through the Python API. A provider
+returns a list of `(train_dataset, test_dataset)` pairs, one pair per
+continual-learning task.
 
 ```python
-from torch.utils.data import TensorDataset
 import torch
+from torch.utils.data import TensorDataset
 
 from meld import MELDConfig, TrainConfig, register_dataset, run
 from meld.datasets import split_classification_dataset_into_tasks
@@ -147,85 +242,37 @@ results = run(
 )
 ```
 
-## Dataset preparation
+## macOS notes
 
-If you want datasets cached before the first benchmark, use:
+- MELD automatically uses Apple `mps` when it is available.
+- `--prefer-cuda` is only relevant on CUDA-capable NVIDIA setups.
+- Keep `--num-workers 0` when you first smoke-test on macOS. That is the
+  default and it avoids DataLoader worker-spawn surprises.
 
-```bash
-meld-bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
-```
+## Troubleshooting
 
-The web dashboard also exposes a preparation flow for:
+- If an image dataset run says `Continuum is required`, install the full package
+  dependencies with `pip install .` or `pip install meld-framework`.
+- If a text run fails because a model or dataset is missing, retry once with an
+  active internet connection so Hugging Face assets can be cached locally.
+- If you only want a quick correctness check, start with `synthetic`,
+  `--epochs 1`, and `--num-workers 0`.
 
-- `CIFAR-10`
-- `CIFAR-100`
-- `STL-10`
-- `AGNews`
-- `DBpedia`
-- `YahooAnswersNLP`
+## Verification
 
-`TinyImageNet` is supported by the runner, but it still expects a manually
-extracted `tiny-imagenet-200` folder under the selected data root.
+Current release checks used for this package:
 
-## Supported datasets
+- `python -m pytest tests -q`
+- `python -m build`
+- `python -m twine check dist/*`
 
-- `synthetic`
-- `CIFAR-10`
-- `CIFAR-100`
-- `STL-10`
-- `TinyImageNet`
-- `AGNews`
-- `DBpedia`
-- `YahooAnswersNLP`
+A GitHub Actions matrix is also included to exercise install and test flows on
+Windows, macOS, and Linux.
 
-## Supported backbones
-
-- `auto`
-- `resnet20`
-- `resnet32`
-- `resnet44`
-- `resnet56`
-- `resnet18_imagenet`
-- `text_encoder`
-
-Supported text encoders include:
-
-- `sentence-transformers/all-MiniLM-L6-v2`
-- `sentence-transformers/all-MiniLM-L12-v2`
-- `sentence-transformers/all-mpnet-base-v2`
-- `sentence-transformers/paraphrase-MiniLM-L6-v2`
-- `bert-base-uncased`
-- `distilbert-base-uncased`
-
-## Project layout
-
-```text
-meld/
-|- api.py
-|- datasets.py
-|- bootstrap.py
-|- cli.py
-|- delta.py
-|- modeling.py
-|- benchmarks/
-|- core/
-|- interfaces/
-|- models/
-`- web/
-```
-
-## Development
-
-Install dev tools with:
+For local development tools:
 
 ```bash
-pip install .[dev]
-```
-
-Run unit tests with:
-
-```bash
-python -m pytest tests/unit -q
+python -m pip install '.[dev]'
 ```
 
 ## Links

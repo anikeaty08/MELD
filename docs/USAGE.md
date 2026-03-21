@@ -1,9 +1,8 @@
 # Usage
 
 MELD is a continual-learning framework for replay-free incremental-update
-workflows. The commands below assume that scope: class-incremental benchmarks,
-safe update checks, and experiment monitoring for supported vision and NLP
-tasks.
+workflows. The commands below focus on the package API, CLI, supported run
+modes, and custom dataset extension points.
 
 ## Install
 
@@ -51,18 +50,11 @@ Bootstrap helper:
 meld-bootstrap --help
 ```
 
-Web dashboard:
-
-```bash
-meld-web
-```
-
 Module forms are also available:
 
 ```bash
 python -m meld.cli --help
 python -m meld.bootstrap --help
-python -m meld.web.server
 ```
 
 ## Python API example
@@ -111,6 +103,21 @@ config = MELDConfig(dataset="synthetic", run_mode="delta")
 
 ```bash
 meld \
+  --dataset synthetic \
+  --num-tasks 2 \
+  --classes-per-task 2 \
+  --run-mode compare \
+  --epochs 1 \
+  --batch-size 8 \
+  --backbone resnet20 \
+  --num-workers 0 \
+  --results-path results.json
+```
+
+NLP example:
+
+```bash
+meld \
   --dataset AGNews \
   --num-tasks 1 \
   --classes-per-task 4 \
@@ -118,19 +125,9 @@ meld \
   --batch-size 8 \
   --backbone text_encoder \
   --text-encoder-model sentence-transformers/all-MiniLM-L6-v2 \
-  --results-path results.json
+  --num-workers 0 \
+  --results-path results_agnews.json
 ```
-
-## Dashboard workflow
-
-The React dashboard at `http://127.0.0.1:8080` can:
-
-- launch new runs
-- stream logs and metrics
-- show all supported backbones and text encoders
-- install requirements from the current environment
-- pre-download supported datasets
-- warm model assets before launch
 
 ## Dataset notes
 
@@ -151,17 +148,14 @@ Bootstrap helper coverage:
 - `CIFAR-100`
 - `CIFAR-10-C`
 
-Dashboard preparation coverage:
-
-- `CIFAR-10`
-- `CIFAR-100`
-- `STL-10`
-- `AGNews`
-- `DBpedia`
-- `YahooAnswersNLP`
-
 `TinyImageNet` still requires a manually extracted `tiny-imagenet-200` folder
 inside the chosen data root.
+
+## macOS notes
+
+- MELD auto-detects Apple `mps` when it is available.
+- `--prefer-cuda` only applies to CUDA-capable NVIDIA systems.
+- Keep `--num-workers 0` for initial smoke tests on macOS.
 
 ## Custom dataset adapters
 

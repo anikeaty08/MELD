@@ -22,6 +22,7 @@ htmlcov/
 .hypothesis/
 .pytest_tmp/
 ptmp_*/
+tests/.tmp_results/
 
 # Build artifacts
 build/
