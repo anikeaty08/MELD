@@ -15,6 +15,17 @@ from ..interfaces.base import ManifoldUpdater, TaskSnapshot, TrainArtifacts
 from .weighter import KLIEPWeighter
 
 
+def _to_device(inputs: Tensor | dict, device: torch.device) -> Tensor | dict:
+    """Move inputs to device — handles both image tensors and NLP dicts."""
+    if isinstance(inputs, dict):
+        return {k: v.to(device) if isinstance(v, Tensor) else v for k, v in inputs.items()}
+    return inputs.to(device)
+
+
+def _is_text(inputs: Tensor | dict) -> bool:
+    return isinstance(inputs, dict)
+
+
 def _kd_loss(student_logits: Tensor, teacher_logits: Tensor, temperature: float = 2.0) -> Tensor:
     """Soft knowledge distillation — Hinton et al. 2015."""
     T = temperature
@@ -235,12 +246,13 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
             seen = 0
 
             for bidx, (inputs, targets) in enumerate(train_loader):
-                inputs = inputs.to(device)
+                inputs = _to_device(inputs, device)
                 targets = targets.to(device)
 
-                # Task 0 should learn the base classes cleanly; replay-free
-                # regularization starts from later tasks.
-                if snapshot is None:
+                # Cutmix/Mixup only for image inputs — skip for text (dict inputs)
+                if _is_text(inputs):
+                    ta, tb, lam_m = targets, targets, 1.0
+                elif snapshot is None:
                     inputs, ta, tb, lam_m = _mixup(inputs, targets, alpha=0.0)
                 else:
                     inputs, ta, tb, lam_m = _cutmix(inputs, targets, alpha=cutmix_alpha)
@@ -335,7 +347,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 val_n = 0
                 with torch.no_grad():
                     for inputs, targets in val_loader:
-                        inputs = inputs.to(device)
+                        inputs = _to_device(inputs, device)
                         targets = targets.to(device)
                         embeddings = model.embed(inputs)
                         logits = model.classifier(embeddings)
@@ -384,7 +396,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         targets_all: list[Tensor] = []
         with torch.no_grad():
             for inputs, targets in new_data_loader:
-                inputs = inputs.to(device)
+                inputs = _to_device(inputs, device)
                 embeddings_all.append(model.embed(inputs))
                 targets_all.append(targets.to(device))
         if not embeddings_all:
@@ -563,7 +575,7 @@ class FullRetrainUpdater(ManifoldUpdater):
             seen = 0
 
             for inputs, targets in new_data_loader:
-                inputs = inputs.to(device)
+                inputs = _to_device(inputs, device)
                 targets = targets.to(device)
 
                 optimizer.zero_grad(set_to_none=True)
@@ -682,7 +694,7 @@ class FrozenBackboneAnalyticUpdater(ManifoldUpdater):
 
         with torch.no_grad():
             for inputs, targets in dataloader:
-                inputs = inputs.to(device)
+                inputs = _to_device(inputs, device)
                 targets = targets.to(device)
                 embeddings = model.embed(inputs)
                 features.append(embeddings)
