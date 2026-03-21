@@ -56,7 +56,7 @@ class TrainConfig:
     text_encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     full_retrain_epochs: int | None = None
-    pac_gate_tolerance: float = 0.1
+    pac_gate_tolerance: float = 0.5
     num_workers: int = 0
 
 
@@ -69,7 +69,7 @@ class MELDConfig:
     run_mode: str = "compare"
     prefer_cuda: bool = False
     bound_tolerance: float = 10.0
-    pac_gate_tolerance: float = 0.1
+    pac_gate_tolerance: float = 0.5
     shift_threshold: float = 0.3
     data_root: Path = Path("./data")
     cifar_c_path: Path | None = None

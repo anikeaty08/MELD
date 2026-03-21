@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import meld.web.server as server
+import web.server as server
 
 
 def _reset_state() -> None:

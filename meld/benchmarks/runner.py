@@ -308,7 +308,7 @@ class BenchmarkRunner:
                     pre_pac_style = self.safety_oracle.pac_style_gap(snapshot_before)
                     pac_gate_triggered = bool(
                         pre_pac_style.bound_is_formal
-                        and pre_pac_style.value > float(getattr(self.config, "pac_gate_tolerance", 0.1))
+                        and pre_pac_style.value > float(getattr(self.config, "pac_gate_tolerance", 0.5))
                     )
             else:
                 task_train_config = self._base_train_config()
@@ -1328,8 +1328,8 @@ class BenchmarkRunner:
             task_id > 0
             and bool(getattr(self.config.train, "enable_importance_weighting", False))
             and (
-                (pac_equivalence is not None and pac_equivalence.bound_is_formal and pac_equivalence.value <= float(getattr(self.config, "pac_gate_tolerance", 0.1)))
-                or (pac_style is not None and pac_style.bound_is_formal and pac_style.value <= float(getattr(self.config, "pac_gate_tolerance", 0.1)))
+                (pac_equivalence is not None and pac_equivalence.bound_is_formal and pac_equivalence.value <= float(getattr(self.config, "pac_gate_tolerance", 0.5)))
+                or (pac_style is not None and pac_style.bound_is_formal and pac_style.value <= float(getattr(self.config, "pac_gate_tolerance", 0.5)))
             )
             and decision.state in {"SAFE_DELTA", "CAUTIOUS_DELTA"}
         )

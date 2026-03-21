@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..api import MELDConfig, TrainConfig
-from ..core.text_encoder import TextEncoderBackbone
+from meld.api import MELDConfig, TrainConfig
+from meld.core.text_encoder import TextEncoderBackbone
 
 
 @dataclass(frozen=True)

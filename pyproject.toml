@@ -27,14 +27,12 @@ classifiers = [
 ]
 dependencies = [
   "datasets>=2.19",
-  "fastapi>=0.115",
   "numpy>=1.24",
   "scipy>=1.10",
   "torch>=2.1",
   "transformers>=4.41",
   "torchvision>=0.16",
   "continuum>=1.2.7",
-  "uvicorn>=0.30",
 ]
 
 [project.urls]
@@ -46,7 +44,6 @@ Documentation = "https://github.com/anikeaty08/MELD/blob/main/docs/USAGE.md"
 [project.scripts]
 meld = "meld.cli:main"
 meld-bootstrap = "meld.bootstrap:main"
-meld-web = "meld.web.server:main"
 
 [project.optional-dependencies]
 benchmark = [
@@ -59,9 +56,6 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["meld*"]
-
-[tool.setuptools.package-data]
-"meld.web" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

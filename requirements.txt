@@ -1,9 +1,7 @@
 datasets>=2.19
-fastapi>=0.115
 numpy>=1.24
 scipy>=1.10
 torch>=2.1
 transformers>=4.41
 torchvision>=0.16
 continuum>=1.2.7
-uvicorn>=0.30

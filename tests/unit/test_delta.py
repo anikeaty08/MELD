@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from meld.api import TrainConfig
+from meld.api import MELDConfig, TrainConfig
 from meld.delta import DeltaModel
 from meld.interfaces.base import Decision, DriftResult, OracleEstimate, TaskSnapshot, TrainArtifacts
 
@@ -167,3 +167,8 @@ def test_delta_model_respects_train_config_pac_gate_tolerance():
     assert gated_updater.calls == 0
     assert permissive_result.decision == "SAFE_DELTA"
     assert permissive_updater.calls == 1
+
+
+def test_framework_defaults_use_consistent_pac_gate_tolerance():
+    assert TrainConfig().pac_gate_tolerance == 0.5
+    assert MELDConfig().pac_gate_tolerance == 0.5

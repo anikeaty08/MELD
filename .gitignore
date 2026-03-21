@@ -30,7 +30,8 @@ dist/
 *.egg-info/
 *.egg
 pip-wheel-metadata/
-meld/web/frontend/node_modules/
+web/frontend/node_modules/
+web/static/node_modules/
 
 # Runtime outputs
 results.json

@@ -172,7 +172,7 @@ class DeltaModel:
         current_classes = self._loader_class_ids(loader)
         self._ensure_classes(current_classes)
         snapshot_before = self._snapshot
-        pac_gate_tolerance = float(getattr(self.train_config, "pac_gate_tolerance", 0.1))
+        pac_gate_tolerance = float(getattr(self.train_config, "pac_gate_tolerance", 0.5))
 
         if snapshot_before is not None:
             pre_risk_estimate = self._safety_oracle.pre_risk_estimate(snapshot_before, self.train_config)

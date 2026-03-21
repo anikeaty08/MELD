@@ -11,17 +11,18 @@ import subprocess
 import sys
 from typing import Any
 
-from ..core.text_encoder import TextEncoderBackbone
-from ..models.backbone import (
+from meld.core.text_encoder import TextEncoderBackbone
+from meld.models.backbone import (
     resnet18_imagenet,
     resnet20,
     resnet32,
     resnet44,
     resnet56,
 )
-from .catalog import DATASET_OPTIONS, find_dataset_option, normalize_dataset_key
+from web.catalog import BACKBONE_OPTIONS, DATASET_OPTIONS, find_dataset_option, normalize_dataset_key
 
 PREP_STATE_FILE = ".meld_prepare_state.json"
+WEB_REQUIREMENTS_PATH = Path("web") / "requirements.txt"
 
 _REQUIREMENT_IMPORTS = {
     "datasets": "datasets",
@@ -93,7 +94,7 @@ def _requirements_status(project_root: Path) -> dict[str, Any]:
         )
     return {
         "ready": all(item["ready"] for item in items),
-        "path": str(project_root / "requirements.txt"),
+        "path": str(project_root / WEB_REQUIREMENTS_PATH),
         "items": items,
     }
 
@@ -328,7 +329,7 @@ def inspect_workspace_readiness(project_root: Path, data_root: Path) -> dict[str
 
 
 def _install_requirements(project_root: Path, data_root: Path) -> dict[str, Any]:
-    requirements_path = project_root / "requirements.txt"
+    requirements_path = project_root / WEB_REQUIREMENTS_PATH
     command = [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)]
     completed = subprocess.run(
         command,
@@ -346,7 +347,7 @@ def _install_requirements(project_root: Path, data_root: Path) -> dict[str, Any]
         "tail": lines[-20:],
         "finishedAt": _timestamp(),
     }
-    _record_state(data_root, "requirements", "requirements.txt", payload)
+    _record_state(data_root, "requirements", str(WEB_REQUIREMENTS_PATH), payload)
     return payload
 
 

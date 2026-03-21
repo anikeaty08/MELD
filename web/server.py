@@ -16,11 +16,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .assets import inspect_workspace_readiness, prepare_workspace
-from .catalog import build_options_payload
+from web.assets import inspect_workspace_readiness, prepare_workspace
+from web.catalog import build_options_payload
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STATIC_DIR = PROJECT_ROOT / "meld" / "web" / "static"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+STATIC_DIR = PROJECT_ROOT / "web" / "static"
 INDEX_PATH = STATIC_DIR / "index.html"
 RESULTS_PATH = PROJECT_ROOT / "results.json"
 LOG_PATH = PROJECT_ROOT / "experiment.log"
@@ -37,7 +37,7 @@ FRONTEND_FALLBACK = """\
 <body style="font-family: Segoe UI, sans-serif; padding: 2rem;">
   <h1>MELD Dashboard</h1>
   <p>The React frontend has not been built yet.</p>
-  <p>Run <code>npm.cmd install</code> and <code>npm.cmd run build</code> in <code>meld/web/frontend</code>.</p>
+  <p>Run <code>npm install</code> and <code>npm run build</code> in <code>web/frontend</code>.</p>
 </body>
 </html>
 """
@@ -129,7 +129,7 @@ def _build_run_command(payload: dict[str, Any]) -> list[str]:
         "--bound-tolerance",
         str(float(payload.get("bound_tolerance", 10.0))),
         "--pac-gate-tolerance",
-        str(float(payload.get("pac_gate_tolerance", 0.1))),
+        str(float(payload.get("pac_gate_tolerance", 0.5))),
         "--mixup-alpha",
         str(float(payload.get("mixup_alpha", 0.2))),
         "--num-workers",
@@ -452,7 +452,7 @@ def stop() -> JSONResponse:
 
 
 def main() -> None:
-    uvicorn.run("meld.web.server:app", host="127.0.0.1", port=8080, reload=False)
+    uvicorn.run("web.server:app", host="127.0.0.1", port=8080, reload=False)
 
 
 if __name__ == "__main__":
