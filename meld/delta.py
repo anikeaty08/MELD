@@ -31,6 +31,17 @@ BACKBONES = {
 }
 
 
+def _move_inputs_to_device(inputs: Tensor | dict[str, Tensor] | tuple[Tensor, ...], device: torch.device) -> Tensor | dict[str, Tensor] | tuple[Tensor, ...]:
+    if isinstance(inputs, dict):
+        return {
+            key: value.to(device) if isinstance(value, Tensor) else value
+            for key, value in inputs.items()
+        }
+    if isinstance(inputs, tuple):
+        return tuple(value.to(device) if isinstance(value, Tensor) else value for value in inputs)
+    return inputs.to(device)
+
+
 @dataclass(slots=True)
 class DeltaUpdateResult:
     task_id: int
@@ -299,7 +310,7 @@ class DeltaModel:
     def predict(self, x: Tensor) -> Tensor:
         self._model.eval()
         with torch.no_grad():
-            return self._model(x.to(self.device))
+            return self._model(_move_inputs_to_device(x, self.device))
 
     def predict_labels(self, x: Tensor) -> Tensor:
         return self.predict(x).argmax(dim=1)
@@ -307,7 +318,7 @@ class DeltaModel:
     def embed(self, x: Tensor) -> Tensor:
         self._model.eval()
         with torch.no_grad():
-            return self._model.embed(x.to(self.device))
+            return self._model.embed(_move_inputs_to_device(x, self.device))
 
     def save(self, path: str | Path) -> None:
         target = Path(path)

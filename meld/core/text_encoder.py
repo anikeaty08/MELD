@@ -40,6 +40,15 @@ class TextEncoderBackbone(nn.Module):
         normalize: L2-normalise the output embedding (default True).
     """
 
+    SUPPORTED_MODELS = {
+        "sentence-transformers/all-MiniLM-L6-v2": 384,
+        "sentence-transformers/all-MiniLM-L12-v2": 384,
+        "sentence-transformers/all-mpnet-base-v2": 768,
+        "sentence-transformers/paraphrase-MiniLM-L6-v2": 384,
+        "bert-base-uncased": 768,
+        "distilbert-base-uncased": 768,
+    }
+
     def __init__(
         self,
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
@@ -57,19 +66,14 @@ class TextEncoderBackbone(nn.Module):
 
     @staticmethod
     def _resolve_out_dim(model_name: str) -> int:
-        dims = {
-            "sentence-transformers/all-MiniLM-L6-v2": 384,
-            "sentence-transformers/all-MiniLM-L12-v2": 384,
-            "sentence-transformers/all-mpnet-base-v2": 768,
-            "sentence-transformers/paraphrase-MiniLM-L6-v2": 384,
-            "bert-base-uncased": 768,
-            "distilbert-base-uncased": 768,
-        }
-        return dims.get(model_name, 384)
+        return TextEncoderBackbone.SUPPORTED_MODELS.get(model_name, 384)
 
-    def _load(self) -> None:
-        if self._loaded:
-            return
+    @classmethod
+    def supported_model_names(cls) -> list[str]:
+        return list(cls.SUPPORTED_MODELS)
+
+    @staticmethod
+    def _transformers() -> tuple[Any, Any]:
         try:
             from transformers import AutoModel, AutoTokenizer
         except ModuleNotFoundError as exc:
@@ -77,8 +81,21 @@ class TextEncoderBackbone(nn.Module):
                 "transformers is required for NLP datasets. "
                 "Install with: pip install transformers"
             ) from exc
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        encoder = AutoModel.from_pretrained(self.model_name)
+        return AutoModel, AutoTokenizer
+
+    def _load_tokenizer(self) -> None:
+        if self._tokenizer is not None:
+            return
+        _, auto_tokenizer = self._transformers()
+        self._tokenizer = auto_tokenizer.from_pretrained(self.model_name)
+
+    def _load_encoder(self) -> None:
+        if self._loaded and self._encoder is not None:
+            return
+        auto_model, _ = self._transformers()
+        self._load_tokenizer()
+        assert self._tokenizer is not None
+        encoder = auto_model.from_pretrained(self.model_name)
         # Freeze all encoder parameters — backbone never trains
         for param in encoder.parameters():
             param.requires_grad_(False)
@@ -86,8 +103,18 @@ class TextEncoderBackbone(nn.Module):
         self._loaded = True
 
     def get_tokenizer(self) -> Any:
-        self._load()
+        self._load_tokenizer()
         return self._tokenizer
+
+    def preload(self) -> dict[str, Any]:
+        self._load_tokenizer()
+        self._load_encoder()
+        return {
+            "model_name": self.model_name,
+            "out_dim": self.out_dim,
+            "tokenizer_ready": self._tokenizer is not None,
+            "encoder_ready": self._encoder is not None,
+        }
 
     def forward(self, input_ids: Tensor, attention_mask: Tensor) -> Tensor:
         """Encode tokenised text to a fixed embedding vector.
@@ -99,7 +126,8 @@ class TextEncoderBackbone(nn.Module):
         Returns:
             (B, out_dim) embedding tensor.
         """
-        self._load()
+        self._load_encoder()
+        assert self._encoder is not None
         self._encoder = self._encoder.to(input_ids.device)
         out = self._encoder(input_ids=input_ids, attention_mask=attention_mask)
         hidden = out.last_hidden_state  # (B, seq_len, hidden)

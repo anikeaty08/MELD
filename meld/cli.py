@@ -27,8 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument(
         "--backbone",
-        default="resnet32",
-        choices=["resnet20", "resnet32", "resnet44", "resnet56", "resnet18_imagenet", "text_encoder"],
+        default="auto",
+        choices=["auto", "resnet20", "resnet32", "resnet44", "resnet56", "resnet18_imagenet", "text_encoder"],
     )
     parser.add_argument("--pretrained-backbone", action="store_true")
     parser.add_argument("--incremental-strategy", default="geometry", choices=["geometry", "frozen_analytic"])
@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--geometry-decay", type=float, default=0.3)
     parser.add_argument("--analytic-ridge", type=float, default=1e-3)
     parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--mixup-alpha", type=float, default=0.2)
     parser.add_argument("--cutmix-alpha", type=float, default=0.0)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--fisher-samples", type=int, default=512)
@@ -84,6 +85,7 @@ def main() -> None:
             geometry_decay=args.geometry_decay,
             analytic_ridge=args.analytic_ridge,
             label_smoothing=args.label_smoothing,
+            mixup_alpha=args.mixup_alpha,
             cutmix_alpha=args.cutmix_alpha,
             max_grad_norm=args.max_grad_norm,
             num_workers=args.num_workers,

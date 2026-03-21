@@ -105,6 +105,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
         lam_kd = float(getattr(config, "lambda_kd", 1.0))
         kd_temp = float(getattr(config, "kd_temperature", 2.0))
         geo_dec = float(getattr(config, "geometry_decay", 0.3))
+        mixup_alpha = float(getattr(config, "mixup_alpha", 0.2))
         cutmix_alpha = float(getattr(config, "cutmix_alpha", 0.0))
         max_grad_norm = float(getattr(config, "max_grad_norm", 0.5))
         enable_importance_weighting = bool(getattr(config, "enable_importance_weighting", True))
@@ -253,7 +254,7 @@ class GeometryConstrainedUpdater(ManifoldUpdater):
                 if _is_text(inputs):
                     ta, tb, lam_m = targets, targets, 1.0
                 elif snapshot is None:
-                    inputs, ta, tb, lam_m = _mixup(inputs, targets, alpha=0.0)
+                    inputs, ta, tb, lam_m = _mixup(inputs, targets, alpha=mixup_alpha)
                 else:
                     inputs, ta, tb, lam_m = _cutmix(inputs, targets, alpha=cutmix_alpha)
 

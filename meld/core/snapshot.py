@@ -14,6 +14,17 @@ from torch.utils.data import DataLoader
 from ..interfaces.base import SnapshotStrategy, TaskSnapshot
 
 
+def _move_inputs_to_device(inputs: Tensor | dict[str, Tensor] | tuple[Tensor, ...], device: torch.device) -> Tensor | dict[str, Tensor] | tuple[Tensor, ...]:
+    if isinstance(inputs, dict):
+        return {
+            key: value.to(device) if isinstance(value, Tensor) else value
+            for key, value in inputs.items()
+        }
+    if isinstance(inputs, tuple):
+        return tuple(value.to(device) if isinstance(value, Tensor) else value for value in inputs)
+    return inputs.to(device)
+
+
 class FisherManifoldSnapshot(SnapshotStrategy):
     def __init__(
         self,
@@ -59,7 +70,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         total_samples = 0
         with torch.no_grad():
             for inputs, targets in dataloader:
-                inputs = inputs.to(device)
+                inputs = _move_inputs_to_device(inputs, device)
                 input_feature_batches.append(self._input_features(inputs).detach().cpu().numpy())
                 embeddings_tensor = model.embed(inputs)
                 logits_tensor = model.classifier(embeddings_tensor)
@@ -76,7 +87,9 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                 for i, target in enumerate(targets_list):
                     tid = int(target)
                     if tid in valid_class_ids:
-                        class_inputs[tid].append(inputs[i].detach().cpu().numpy())
+                        sample_input = self._sample_input_array(inputs, i)
+                        if sample_input is not None:
+                            class_inputs[tid].append(sample_input)
                         class_embeddings[tid].append(embeddings[i])
                         class_logits[tid].append(logits[i])
                         total_samples += 1
@@ -91,14 +104,17 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             inputs_list = class_inputs.get(class_id, [])
             vectors_list = class_embeddings.get(class_id, [])
             logits_list = class_logits.get(class_id, [])
-            if not inputs_list or not vectors_list or not logits_list:
+            if not vectors_list or not logits_list:
                 continue
-            raw_inputs = np.nan_to_num(
-                np.stack(inputs_list, axis=0),
-                nan=0.0,
-                posinf=1e6,
-                neginf=-1e6,
-            ).astype(np.float32, copy=False)
+            if inputs_list and len(inputs_list) == len(vectors_list):
+                raw_inputs = np.nan_to_num(
+                    np.stack(inputs_list, axis=0),
+                    nan=0.0,
+                    posinf=1e6,
+                    neginf=-1e6,
+                ).astype(np.float32, copy=False)
+            else:
+                raw_inputs = np.empty((0, 0), dtype=np.float32)
             vectors = np.nan_to_num(np.stack(vectors_list, axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
             logits = np.nan_to_num(np.stack(logits_list, axis=0), nan=0.0, posinf=1e6, neginf=-1e6)
             class_means[class_id] = np.nan_to_num(vectors.mean(axis=0), nan=0.0, posinf=1e6, neginf=-1e6).astype(
@@ -113,7 +129,10 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             anchor_count = min(self.anchors_per_class, len(vectors))
             if anchor_count > 0:
                 indices = np.linspace(0, len(vectors) - 1, num=anchor_count, dtype=int)
-                class_anchor_inputs[class_id] = raw_inputs[indices]
+                if raw_inputs.shape[0] >= len(vectors):
+                    class_anchor_inputs[class_id] = raw_inputs[indices]
+                else:
+                    class_anchor_inputs[class_id] = np.empty((0, 0), dtype=np.float32)
                 class_anchors[class_id] = vectors[indices]
                 class_anchor_logits[class_id] = logits[indices]
             else:
@@ -308,11 +327,12 @@ class FisherManifoldSnapshot(SnapshotStrategy):
             for inputs, targets in dataloader:
                 if total >= fisher_samples:
                     break
-                inputs = inputs.to(device)
+                inputs = _move_inputs_to_device(inputs, device)
                 targets = targets.to(device)
                 remaining = fisher_samples - total
-                if inputs.size(0) > remaining:
-                    inputs = inputs[:remaining]
+                batch_size = self._batch_size(inputs)
+                if batch_size > remaining:
+                    inputs = self._slice_batch(inputs, remaining)
                     targets = targets[:remaining]
 
                 model.zero_grad(set_to_none=True)
@@ -322,7 +342,7 @@ class FisherManifoldSnapshot(SnapshotStrategy):
                     continue
                 loss.backward()
 
-                batch_size = inputs.size(0)
+                batch_size = targets.size(0)
                 for index, param in enumerate(params):
                     if param.grad is None:
                         continue
@@ -412,7 +432,65 @@ class FisherManifoldSnapshot(SnapshotStrategy):
         return any(name.startswith(f"classifier.heads.{head_index}.") for head_index in protected_head_indices)
 
     @staticmethod
-    def _input_features(inputs: Tensor) -> Tensor:
+    def _sample_input_array(inputs: Tensor | dict[str, Tensor] | tuple[Tensor, ...], index: int) -> np.ndarray | None:
+        if isinstance(inputs, Tensor):
+            return inputs[index].detach().cpu().numpy()
+        return None
+
+    @staticmethod
+    def _batch_size(inputs: Tensor | dict[str, Tensor] | tuple[Tensor, ...]) -> int:
+        if isinstance(inputs, Tensor):
+            return int(inputs.size(0))
+        if isinstance(inputs, dict):
+            for value in inputs.values():
+                if isinstance(value, Tensor):
+                    return int(value.size(0))
+            return 0
+        if isinstance(inputs, tuple):
+            for value in inputs:
+                if isinstance(value, Tensor):
+                    return int(value.size(0))
+            return 0
+        return 0
+
+    @staticmethod
+    def _slice_batch(inputs: Tensor | dict[str, Tensor] | tuple[Tensor, ...], size: int) -> Tensor | dict[str, Tensor] | tuple[Tensor, ...]:
+        if isinstance(inputs, Tensor):
+            return inputs[:size]
+        if isinstance(inputs, dict):
+            return {
+                key: value[:size] if isinstance(value, Tensor) else value
+                for key, value in inputs.items()
+            }
+        if isinstance(inputs, tuple):
+            return tuple(value[:size] if isinstance(value, Tensor) else value for value in inputs)
+        return inputs
+
+    @staticmethod
+    def _input_features(inputs: Tensor | dict[str, Tensor] | tuple[Tensor, ...]) -> Tensor:
+        if isinstance(inputs, dict):
+            input_ids = inputs.get("input_ids")
+            attention_mask = inputs.get("attention_mask")
+            if isinstance(input_ids, Tensor) and isinstance(attention_mask, Tensor):
+                ids = input_ids.float()
+                mask = attention_mask.float()
+                if ids.ndim == 1:
+                    ids = ids.unsqueeze(0)
+                    mask = mask.unsqueeze(0)
+                lengths = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+                masked_ids = ids * mask
+                token_mean = masked_ids.sum(dim=1, keepdim=True) / lengths
+                centered = (ids - token_mean) * mask
+                token_std = torch.sqrt(centered.pow(2).sum(dim=1, keepdim=True) / lengths)
+                density = lengths / max(ids.size(1), 1)
+                return torch.cat((token_mean, token_std, lengths, density), dim=1)
+            batch = FisherManifoldSnapshot._batch_size(inputs)
+            return torch.zeros((batch, 4), dtype=torch.float32)
+        if isinstance(inputs, tuple):
+            tensor_inputs = next((value for value in inputs if isinstance(value, Tensor)), None)
+            if tensor_inputs is None:
+                return torch.zeros((0, 4), dtype=torch.float32)
+            inputs = tensor_inputs
         channel_mean = inputs.mean(dim=(2, 3))
         channel_std = inputs.std(dim=(2, 3), unbiased=False)
         flat = inputs.flatten(start_dim=1)

@@ -17,7 +17,7 @@ from .interfaces.base import DriftDetector, ManifoldUpdater
 
 @dataclass(slots=True)
 class TrainConfig:
-    backbone: str = "resnet32"
+    backbone: str = "auto"
     pretrained_backbone: bool = True
     incremental_strategy: str = "geometry"
 
@@ -37,6 +37,7 @@ class TrainConfig:
     analytic_ridge: float = 1e-3
     enable_importance_weighting: bool = True
     label_smoothing: float = 0.1
+    mixup_alpha: float = 0.2
     cutmix_alpha: float = 1.0
     max_grad_norm: float = 1.0
     use_imprinting: bool = True
@@ -54,6 +55,7 @@ class TrainConfig:
     text_encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     full_retrain_epochs: int | None = None
+    pac_gate_tolerance: float = 0.1
     num_workers: int = 0
 
 

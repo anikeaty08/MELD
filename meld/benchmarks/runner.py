@@ -69,6 +69,25 @@ _STL10_MEAN = (0.4467, 0.4398, 0.4066)
 _STL10_STD = (0.2603, 0.2566, 0.2713)
 
 
+def _move_inputs_to_device(
+    inputs: Any,
+    device: torch.device,
+    *,
+    non_blocking: bool = False,
+) -> Any:
+    if isinstance(inputs, dict):
+        return {
+            key: value.to(device, non_blocking=non_blocking) if isinstance(value, torch.Tensor) else value
+            for key, value in inputs.items()
+        }
+    if isinstance(inputs, tuple):
+        return tuple(
+            value.to(device, non_blocking=non_blocking) if isinstance(value, torch.Tensor) else value
+            for value in inputs
+        )
+    return inputs.to(device, non_blocking=non_blocking)
+
+
 def _seed_worker(worker_id: int, base_seed: int) -> None:
     """DataLoader worker seeding for Python/numpy/torch RNGs.
 
@@ -87,13 +106,17 @@ def _seed_worker(worker_id: int, base_seed: int) -> None:
 
 def _auto_backbone(dataset: str) -> str:
     d = dataset.upper().replace("-", "").replace("_", "")
+    if d == "SYNTHETIC":
+        return "resnet20"
     if d == "CIFAR10":
         return "resnet32"
+    if d == "CIFAR100":
+        return "resnet56"
     if d in ("TINYIMAGENET", "TINYIMAGENET200", "STL10"):
         return "resnet18_imagenet"
     if d in ("AGNEWS", "DBPEDIA", "YAHOOANSWERSNLP"):
         return "text_encoder"
-    return "resnet56"
+    return "resnet32"
 
 
 class BenchmarkRunner:
@@ -537,18 +560,8 @@ class BenchmarkRunner:
 
     def _build_model(self) -> MELDModel:
         backbone_name: str = self.config.train.backbone
-        if backbone_name == "resnet32":
-            suggested = _auto_backbone(self.config.dataset)
-            if suggested != backbone_name:
-                import warnings
-
-                warnings.warn(
-                    f"backbone='resnet32' was auto-upgraded to '{suggested}' "
-                    f"for dataset '{self.config.dataset}'. "
-                    "Set TrainConfig(backbone=...) explicitly to suppress this.",
-                    stacklevel=2,
-                )
-                backbone_name = suggested
+        if backbone_name == "auto":
+            backbone_name = _auto_backbone(self.config.dataset)
 
         # Text encoder backbone — lazy-loaded, no registry entry needed
         if backbone_name == "text_encoder":
@@ -795,7 +808,7 @@ class BenchmarkRunner:
         from ..core.text_encoder import TextEncoderBackbone
 
         # Load tokenizer once to encode all texts
-        encoder = TextEncoderBackbone()
+        encoder = TextEncoderBackbone(model_name=self.config.train.text_encoder_model)
         tokenizer = encoder.get_tokenizer()
 
         hf_name_map = {
@@ -959,7 +972,7 @@ class BenchmarkRunner:
         with torch.no_grad():
             for loader in eval_loaders:
                 for inp, tgt in loader:
-                    logits_all.append(model(inp.to(self.device)))
+                    logits_all.append(model(_move_inputs_to_device(inp, self.device, non_blocking=self._pin_memory)))
                     targets_all.append(tgt.to(self.device))
         all_logits = torch.cat(logits_all)
         all_targets = torch.cat(targets_all)
@@ -1016,7 +1029,7 @@ class BenchmarkRunner:
         model.eval()
         with torch.no_grad():
             for inputs, targets in task_loader:
-                inputs = inputs.to(self.device, non_blocking=self._pin_memory)
+                inputs = _move_inputs_to_device(inputs, self.device, non_blocking=self._pin_memory)
                 targets = targets.to(self.device, non_blocking=self._pin_memory)
                 embeddings = model.embed(inputs)
                 for class_id in class_ids:
@@ -1051,7 +1064,7 @@ class BenchmarkRunner:
         collected = 0
         with torch.no_grad():
             for inputs, _targets in loader:
-                inputs = inputs.to(self.device, non_blocking=self._pin_memory)
+                inputs = _move_inputs_to_device(inputs, self.device, non_blocking=self._pin_memory)
                 embeddings = model.embed(inputs).detach().cpu().numpy()
                 if collected + len(embeddings) > max_samples:
                     embeddings = embeddings[: max_samples - collected]
