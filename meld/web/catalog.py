@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 from ..api import MELDConfig, TrainConfig
@@ -199,11 +199,33 @@ def find_dataset_option(name: str) -> DatasetOption:
 
 
 def dataset_options_payload() -> list[dict[str, Any]]:
-    return [asdict(option) for option in DATASET_OPTIONS]
+    return [
+        {
+            "id": option.id,
+            "label": option.label,
+            "domain": option.domain,
+            "classCount": option.class_count,
+            "defaultTasks": option.default_tasks,
+            "defaultClassesPerTask": option.default_classes_per_task,
+            "recommendedBackbone": option.recommended_backbone,
+            "autoDownload": option.auto_download,
+            "note": option.note,
+        }
+        for option in DATASET_OPTIONS
+    ]
 
 
 def backbone_options_payload() -> list[dict[str, Any]]:
-    return [asdict(option) for option in BACKBONE_OPTIONS]
+    return [
+        {
+            "id": option.id,
+            "label": option.label,
+            "family": option.family,
+            "supportsPretrained": option.supports_pretrained,
+            "note": option.note,
+        }
+        for option in BACKBONE_OPTIONS
+    ]
 
 
 def text_model_options_payload() -> list[dict[str, Any]]:
