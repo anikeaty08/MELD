@@ -109,6 +109,7 @@ deactivate
 Running `python -m pip install .` installs the runtime defined in
 [pyproject.toml](https://github.com/anikeaty08/MELD/blob/main/pyproject.toml), including:
 
+- `datasets`
 - `torch`
 - `torchvision`
 - `continuum`
@@ -116,6 +117,7 @@ Running `python -m pip install .` installs the runtime defined in
 - `uvicorn`
 - `numpy`
 - `scipy`
+- `transformers`
 
 Running `python -m meld.bootstrap ...` downloads datasets into the local `./data`
 folder inside the cloned repository.

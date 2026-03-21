@@ -45,6 +45,10 @@ python -m meld.bootstrap --datasets CIFAR-10 CIFAR-100 --data-root ./data
 Activation alone does not install dependencies. The install happens when you run
 `python -m pip install .`.
 
+That install includes the MELD runtime plus `transformers` and `datasets`, so
+those packages are available automatically inside the project virtual
+environment.
+
 To exit:
 
 ```bash
