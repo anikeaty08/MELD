@@ -35,7 +35,7 @@ from ..interfaces.base import (
     TrainArtifacts,
 )
 from ..modeling import MELDModel
-from ..models.backbone import resnet20, resnet32, resnet44, resnet56
+from ..models.backbone import resnet20, resnet32, resnet44, resnet56, resnet18_imagenet
 from ..models.classifier import IncrementalClassifier
 from .metrics import (
     compute_classification_metrics,
@@ -56,12 +56,17 @@ BACKBONES = {
     "resnet32": resnet32,
     "resnet44": resnet44,
     "resnet56": resnet56,
+    "resnet18_imagenet": resnet18_imagenet,
 }
 
 _CIFAR10_MEAN = (0.4914, 0.4822, 0.4465)
 _CIFAR10_STD = (0.2470, 0.2435, 0.2616)
 _CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
 _CIFAR100_STD = (0.2675, 0.2565, 0.2761)
+_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+_IMAGENET_STD = (0.229, 0.224, 0.225)
+_STL10_MEAN = (0.4467, 0.4398, 0.4066)
+_STL10_STD = (0.2603, 0.2566, 0.2713)
 
 
 def _seed_worker(worker_id: int, base_seed: int) -> None:
@@ -81,9 +86,13 @@ def _seed_worker(worker_id: int, base_seed: int) -> None:
 
 
 def _auto_backbone(dataset: str) -> str:
-    d = dataset.upper().replace("-", "")
+    d = dataset.upper().replace("-", "").replace("_", "")
     if d == "CIFAR10":
         return "resnet32"
+    if d in ("TINYIMAGENET", "TINYIMAGENET200", "STL10"):
+        return "resnet18_imagenet"
+    if d in ("AGNEWS", "DBPEDIA", "YAHOOANSWERSNLP"):
+        return "text_encoder"
     return "resnet56"
 
 
@@ -540,10 +549,19 @@ class BenchmarkRunner:
                     stacklevel=2,
                 )
                 backbone_name = suggested
+
+        # Text encoder backbone — lazy-loaded, no registry entry needed
+        if backbone_name == "text_encoder":
+            from ..core.text_encoder import TextEncoderBackbone
+            text_model = self.config.train.text_encoder_model
+            backbone = TextEncoderBackbone(model_name=text_model)
+            classifier = IncrementalClassifier(backbone.out_dim)
+            return MELDModel(backbone, classifier).to(self.device)
+
         if backbone_name not in BACKBONES:
             raise ValueError(
                 f"Unknown backbone '{backbone_name}'. "
-                f"Valid choices: {sorted(BACKBONES)}"
+                f"Valid choices: {sorted(BACKBONES)} or 'text_encoder'"
             )
         pretrained: bool = self.config.train.pretrained_backbone
         backbone = BACKBONES[backbone_name](pretrained=pretrained)
@@ -589,10 +607,15 @@ class BenchmarkRunner:
         return train_tasks, eval_tasks
 
     def _load_dataset_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
-        dataset_name = self.config.dataset.upper().replace("-", "")
+        dataset_name = self.config.dataset.upper().replace("-", "").replace("_", "")
         if dataset_name == "SYNTHETIC":
             return self._synthetic_bundle()
 
+        # ── NLP datasets ────────────────────────────────────────────────────
+        if dataset_name in ("AGNEWS", "DBPEDIA", "YAHOOANSWERSNLP"):
+            return self._nlp_bundle(dataset_name)
+
+        # ── Image datasets ───────────────────────────────────────────────────
         try:
             from continuum import ClassIncremental
             from continuum.datasets import CIFAR10, CIFAR100
@@ -607,7 +630,7 @@ class BenchmarkRunner:
             import torchvision  # noqa: F401
         except ModuleNotFoundError as exc:
             raise RuntimeError(
-                "torchvision is required for CIFAR dataset support. "
+                "torchvision is required for image dataset support. "
                 "Install project dependencies with `pip install -r requirements.txt`."
             ) from exc
 
@@ -622,6 +645,7 @@ class BenchmarkRunner:
                     "Check the data path, network access, and Continuum installation."
                 ) from exc
             mean, std = _CIFAR10_MEAN, _CIFAR10_STD
+
         elif d == "CIFAR100":
             try:
                 tr = CIFAR100(data_path=str(self.config.data_root), train=True, download=True)
@@ -632,10 +656,18 @@ class BenchmarkRunner:
                     "Check the data path, network access, and Continuum installation."
                 ) from exc
             mean, std = _CIFAR100_MEAN, _CIFAR100_STD
+
+        elif d in ("TINYIMAGENET", "TINYIMAGENET200"):
+            return self._tiny_imagenet_bundle()
+
+        elif d == "STL10":
+            return self._stl10_bundle()
+
         else:
             raise ValueError(
                 f"Unsupported dataset '{self.config.dataset}'. "
-                "Supported values: synthetic, CIFAR-10, CIFAR-100."
+                "Supported values: synthetic, CIFAR-10, CIFAR-100, "
+                "TinyImageNet, STL-10, AGNews, DBpedia."
             )
 
         s_tr = ClassIncremental(tr, increment=self.config.classes_per_task, transformations=None)
@@ -648,6 +680,167 @@ class BenchmarkRunner:
                     _TaskDatasetAdapter(s_te[i], mean=mean, std=std, is_train=False),
                 )
             )
+        return bundle
+
+    def _tiny_imagenet_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        """Tiny ImageNet-200: 200 classes, 64×64 images, 100k train / 10k val."""
+        try:
+            import torchvision.transforms as T
+            from torchvision.datasets import ImageFolder
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("torchvision is required for Tiny ImageNet.") from exc
+
+        root = Path(self.config.data_root) / "tiny-imagenet-200"
+        if not root.exists():
+            raise RuntimeError(
+                f"Tiny ImageNet not found at {root}. "
+                "Download from http://cs231n.stanford.edu/tiny-imagenet-200.zip "
+                "and extract to your data root."
+            )
+
+        train_transform = T.Compose([
+            T.RandomCrop(64, padding=8),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
+        ])
+        val_transform = T.Compose([
+            T.ToTensor(),
+            T.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
+        ])
+
+        train_ds = ImageFolder(root / "train", transform=train_transform)
+        val_ds = ImageFolder(root / "val", transform=val_transform)
+
+        return self._split_into_tasks(train_ds, val_ds, num_classes=200)
+
+    def _stl10_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        """STL-10: 10 classes, 96×96 images, 5k train / 8k test."""
+        try:
+            import torchvision.transforms as T
+            from torchvision.datasets import STL10
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("torchvision is required for STL-10.") from exc
+
+        train_transform = T.Compose([
+            T.Resize(64),
+            T.RandomCrop(64, padding=8),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(_STL10_MEAN, _STL10_STD),
+        ])
+        val_transform = T.Compose([
+            T.Resize(64),
+            T.ToTensor(),
+            T.Normalize(_STL10_MEAN, _STL10_STD),
+        ])
+
+        data_root = str(self.config.data_root)
+        train_ds = STL10(data_root, split="train", download=True, transform=train_transform)
+        val_ds = STL10(data_root, split="test", download=True, transform=val_transform)
+
+        return self._split_into_tasks(train_ds, val_ds, num_classes=10)
+
+    def _split_into_tasks(
+        self,
+        train_ds: Any,
+        val_ds: Any,
+        num_classes: int,
+    ) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        """Split a labelled dataset into class-incremental tasks."""
+        import torch
+        from torch.utils.data import Subset
+
+        classes_per_task = self.config.classes_per_task
+        num_tasks = min(self.config.num_tasks, num_classes // classes_per_task)
+
+        def _indices_for_classes(dataset: Any, class_ids: list[int]) -> list[int]:
+            if hasattr(dataset, "targets"):
+                targets = torch.as_tensor(dataset.targets)
+            elif hasattr(dataset, "labels"):
+                targets = torch.as_tensor(dataset.labels)
+            else:
+                targets = torch.tensor([dataset[i][1] for i in range(len(dataset))])
+            mask = torch.zeros(len(targets), dtype=torch.bool)
+            for c in class_ids:
+                mask |= targets == c
+            return mask.nonzero(as_tuple=False).squeeze(1).tolist()
+
+        bundle: list[tuple[Dataset[Any], Dataset[Any]]] = []
+        for task_id in range(num_tasks):
+            start = task_id * classes_per_task
+            class_ids = list(range(start, start + classes_per_task))
+            tr_idx = _indices_for_classes(train_ds, class_ids)
+            te_idx = _indices_for_classes(val_ds, class_ids)
+            bundle.append((
+                _ClassRemapDataset(Subset(train_ds, tr_idx), class_ids),
+                _ClassRemapDataset(Subset(val_ds, te_idx), class_ids),
+            ))
+        return bundle
+
+    def _nlp_bundle(self, dataset_name: str) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        """Build class-incremental tasks from a text classification dataset.
+
+        Supported: AGNEWS (4 classes), DBPEDIA (14 classes).
+        Requires: pip install transformers datasets
+        """
+        try:
+            from datasets import load_dataset as hf_load
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "HuggingFace `datasets` is required for NLP datasets. "
+                "Install with: pip install datasets transformers"
+            ) from exc
+
+        from ..core.text_encoder import TextEncoderBackbone
+
+        # Load tokenizer once to encode all texts
+        encoder = TextEncoderBackbone()
+        tokenizer = encoder.get_tokenizer()
+
+        hf_name_map = {
+            "AGNEWS": ("ag_news", None),
+            "DBPEDIA": ("dbpedia_14", None),
+            "YAHOOANSWERSNLP": ("yahoo_answers_topics", None),
+        }
+        hf_name, hf_config = hf_name_map[dataset_name]
+        num_classes_map = {"AGNEWS": 4, "DBPEDIA": 14, "YAHOOANSWERSNLP": 10}
+        num_classes = num_classes_map[dataset_name]
+        text_col_map = {"AGNEWS": "text", "DBPEDIA": "content", "YAHOOANSWERSNLP": "best_answer"}
+
+        raw = hf_load(hf_name, hf_config, cache_dir=str(self.config.data_root))
+        train_split = raw["train"]
+        test_split = raw["test"]
+        text_col = text_col_map[dataset_name]
+
+        def _tokenize(texts: list[str]) -> dict[str, Any]:
+            return tokenizer(
+                texts,
+                padding="max_length",
+                truncation=True,
+                max_length=128,
+                return_tensors="pt",
+            )
+
+        def _build_tensor_dataset(split: Any) -> "_NLPTensorDataset":
+            texts = split[text_col]
+            labels = split["label"]
+            enc = _tokenize(texts)
+            return _NLPTensorDataset(
+                enc["input_ids"],
+                enc["attention_mask"],
+                torch.tensor(labels, dtype=torch.long),
+            )
+
+        import logging
+        logging.getLogger("meld").info(
+            "Tokenising %s (train=%d, test=%d) — this takes ~1 min on first run.",
+            dataset_name, len(train_split), len(test_split),
+        )
+        train_full = _build_tensor_dataset(train_split)
+        test_full = _build_tensor_dataset(test_split)
+
+        return self._split_nlp_into_tasks(train_full, test_full, num_classes)
         return bundle
 
     def _synthetic_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
@@ -670,6 +863,36 @@ class BenchmarkRunner:
                 )
             )
         return tasks
+
+    def _split_nlp_into_tasks(
+        self,
+        train_ds: "_NLPTensorDataset",
+        test_ds: "_NLPTensorDataset",
+        num_classes: int,
+    ) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        """Split NLP dataset into class-incremental tasks."""
+        from torch.utils.data import Subset
+
+        classes_per_task = self.config.classes_per_task
+        num_tasks = min(self.config.num_tasks, num_classes // classes_per_task)
+
+        def _idx_for(ds: "_NLPTensorDataset", class_ids: list[int]) -> list[int]:
+            mask = torch.zeros(len(ds), dtype=torch.bool)
+            for c in class_ids:
+                mask |= ds.labels == c
+            return mask.nonzero(as_tuple=False).squeeze(1).tolist()
+
+        bundle: list[tuple[Dataset[Any], Dataset[Any]]] = []
+        for task_id in range(num_tasks):
+            start = task_id * classes_per_task
+            class_ids = list(range(start, start + classes_per_task))
+            tr_idx = _idx_for(train_ds, class_ids)
+            te_idx = _idx_for(test_ds, class_ids)
+            bundle.append((
+                _NLPSubset(train_ds, tr_idx, class_ids),
+                _NLPSubset(test_ds, te_idx, class_ids),
+            ))
+        return bundle
 
     def _run_full_retrain_baseline(
         self,
@@ -1211,3 +1434,81 @@ class _TaskDatasetAdapter(Dataset[Any]):
         if t.max().item() > 2.0:
             t = t / 255.0
         return t
+
+
+class _ClassRemapDataset(Dataset):  # type: ignore[type-arg]
+    """Wraps a Subset and remaps absolute class ids to task-local ids.
+
+    E.g. for task 2 with class_ids=[20,21,22], label 20 → 20 (global ids
+    are preserved so the incremental classifier can accumulate them).
+    """
+
+    def __init__(self, subset: Any, class_ids: list[int]) -> None:
+        self.subset = subset
+        self.class_ids = class_ids
+
+    def __len__(self) -> int:
+        return len(self.subset)
+
+    def __getitem__(self, idx: int) -> tuple[Any, int]:
+        x, y = self.subset[idx]
+        return x, int(y)
+
+
+class _NLPTensorDataset(Dataset):  # type: ignore[type-arg]
+    """Pre-tokenised text dataset backed by tensors.
+
+    Each item returns (input_ids, attention_mask, label) as a dict so
+    the DataLoader can batch them. The model forward pass receives the dict
+    and passes input_ids + attention_mask to the text encoder.
+    """
+
+    def __init__(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> None:
+        self.input_ids = input_ids
+        self.attention_mask = attention_mask
+        self.labels = labels
+
+    def __len__(self) -> int:
+        return len(self.labels)
+
+    def __getitem__(self, idx: int) -> tuple[dict[str, torch.Tensor], int]:
+        return (
+            {
+                "input_ids": self.input_ids[idx],
+                "attention_mask": self.attention_mask[idx],
+            },
+            int(self.labels[idx].item()),
+        )
+
+
+class _NLPSubset(Dataset):  # type: ignore[type-arg]
+    """Task-specific slice of an _NLPTensorDataset."""
+
+    def __init__(
+        self,
+        full: "_NLPTensorDataset",
+        indices: list[int],
+        class_ids: list[int],
+    ) -> None:
+        idx_t = torch.tensor(indices, dtype=torch.long)
+        self.input_ids = full.input_ids[idx_t]
+        self.attention_mask = full.attention_mask[idx_t]
+        self.labels = full.labels[idx_t]
+        self.class_ids = class_ids
+
+    def __len__(self) -> int:
+        return len(self.labels)
+
+    def __getitem__(self, idx: int) -> tuple[dict[str, torch.Tensor], int]:
+        return (
+            {
+                "input_ids": self.input_ids[idx],
+                "attention_mask": self.attention_mask[idx],
+            },
+            int(self.labels[idx].item()),
+        )

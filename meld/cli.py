@@ -12,15 +12,31 @@ from .core.snapshot import FisherManifoldSnapshot
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run MELD benchmarks.")
-    parser.add_argument("--dataset", default="CIFAR-10")
+    parser.add_argument(
+        "--dataset",
+        default="CIFAR-10",
+        help=(
+            "Dataset to use. Image: synthetic, CIFAR-10, CIFAR-100, TinyImageNet, STL-10. "
+            "Text: AGNews (4 cls), DBpedia (14 cls)."
+        ),
+    )
     parser.add_argument("--num-tasks", type=int, default=2)
     parser.add_argument("--classes-per-task", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.1)
-    parser.add_argument("--backbone", default="resnet32")
+    parser.add_argument(
+        "--backbone",
+        default="resnet32",
+        choices=["resnet20", "resnet32", "resnet44", "resnet56", "resnet18_imagenet", "text_encoder"],
+    )
     parser.add_argument("--pretrained-backbone", action="store_true")
     parser.add_argument("--incremental-strategy", default="geometry", choices=["geometry", "frozen_analytic"])
+    parser.add_argument(
+        "--text-encoder-model",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        help="HuggingFace model for text backbone. Only used when --backbone text_encoder.",
+    )
     parser.add_argument("--base-epochs", type=int, default=None)
     # Keep CLI default aligned with MELDConfig default (too-small values skip delta
     # training almost immediately and make comparisons misleading).
@@ -71,6 +87,7 @@ def main() -> None:
             cutmix_alpha=args.cutmix_alpha,
             max_grad_norm=args.max_grad_norm,
             num_workers=args.num_workers,
+            text_encoder_model=args.text_encoder_model,
         ),
     )
     snapshot_strategy = FisherManifoldSnapshot(fisher_samples=int(args.fisher_samples))

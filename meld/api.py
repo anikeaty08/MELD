@@ -50,6 +50,9 @@ class TrainConfig:
     protection_level: float = 0.5
     enable_grad_projection: bool = False
 
+    # NLP settings — only used when backbone = "text_encoder"
+    text_encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+
     full_retrain_epochs: int | None = None
     num_workers: int = 0
 
