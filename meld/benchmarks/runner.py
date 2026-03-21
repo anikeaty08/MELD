@@ -161,11 +161,9 @@ class BenchmarkRunner:
             )
         return mode
 
-    def _uses_custom_dataset_provider(self) -> bool:
-        return bool(getattr(self.config, "dataset_provider", None) is not None or get_dataset_provider(self.config.dataset) is not None)
-
     def run(self, results_path: str | Path | None = None) -> dict[str, Any]:
         self._seed_everything(int(self.config.seed))
+        run_mode = self._run_mode()
         tasks, eval_loaders = self._build_tasks()
         model = self._build_model()
         all_seen_loaders: list[DataLoader] = []
@@ -189,6 +187,59 @@ class BenchmarkRunner:
 
         for task_id, task_loader in enumerate(tasks):
             all_seen_loaders.append(task_loader)
+            old_class_ids = list(range(0, task_id * self.config.classes_per_task))
+            new_class_ids = list(
+                range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)
+            )
+
+            if run_mode == "full_retrain":
+                model, full_metrics, snapshot_after, decision, full_artifacts = self._run_primary_full_retrain(
+                    task_id=task_id,
+                    all_seen_loaders=all_seen_loaders,
+                    eval_loaders=eval_loaders,
+                )
+                pre_risk_estimate = self._not_applicable_estimate("full_retrain_mode")
+                post_drift_realized = self._not_applicable_estimate("full_retrain_mode")
+                drift_result = DriftResult(0.0, False, {}, "none")
+                task_result = self._task_result(
+                    task_id,
+                    None,
+                    full_metrics,
+                    None,
+                    snapshot_after,
+                    pre_risk_estimate,
+                    post_drift_realized,
+                    drift_result,
+                    decision,
+                    delta_wall_time_seconds=0.0,
+                    cil_metrics=None,
+                    train_artifacts=full_artifacts,
+                    pretrain_shift=None,
+                    pre_pac_style=None,
+                )
+                results["tasks"].append(task_result)
+                results["bounds_timeline"].append(
+                    {
+                        "task_id": task_id,
+                        "risk_estimate_pre": 0.0,
+                        "drift_realized_post": 0.0,
+                        "risk_estimate_held": True,
+                        "bound_type": "full_retrain_mode",
+                        "bound_is_formal": False,
+                        "pac_style_gap": task_result["oracle"].get("pac_style_gap"),
+                        "decision_state": decision.state,
+                    }
+                )
+                results["epoch_history"].append(
+                    {
+                        "task_id": task_id,
+                        "delta": self._artifacts_payload(None, skipped=True),
+                        "full_retrain": self._artifacts_payload(full_artifacts),
+                    }
+                )
+                self._write_results(results_path, results)
+                continue
+
             new_class_ids = model.classifier.adaption(self.config.classes_per_task)
             if bool(getattr(self.config.train, "use_imprinting", True)) and (
                 task_id > 0 or bool(getattr(self.config.train, "pretrained_backbone", False))
@@ -331,16 +382,17 @@ class BenchmarkRunner:
                     )
                     drift_result = DriftResult(0.0, False, {}, "none")
 
-                old_class_ids = list(range(0, task_id * self.config.classes_per_task))
-                new_class_ids = list(
-                    range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)
-                )
-                full_metrics, full_time = self._run_full_retrain_baseline(
-                    all_seen_loaders,
-                    eval_loaders[: task_id + 1],
-                    old_class_ids=old_class_ids,
-                    new_class_ids=new_class_ids,
-                )
+                full_artifacts = None
+                if run_mode == "compare":
+                    _baseline_model, full_metrics, full_time, full_artifacts = self._run_full_retrain_baseline(
+                        all_seen_loaders,
+                        eval_loaders[: task_id + 1],
+                        old_class_ids=old_class_ids,
+                        new_class_ids=new_class_ids,
+                    )
+                else:
+                    full_metrics = None
+                    full_time = 0.0
                 decision = self.deploy_policy.decide(
                     pre_risk_estimate.value,
                     post_drift_realized.value,
@@ -434,31 +486,28 @@ class BenchmarkRunner:
                 results["epoch_history"].append(
                     {
                         "task_id": task_id,
-                        "delta": {
-                            "epochs_run": int(delta_artifacts.epochs_run),
-                            "ce_loss_per_epoch": list(delta_artifacts.ce_loss_per_epoch),
-                            "geometry_loss_per_epoch": list(delta_artifacts.geometry_loss_per_epoch),
-                            "ewc_loss_per_epoch": list(delta_artifacts.ewc_loss_per_epoch),
-                            "train_accuracy_per_epoch": list(delta_artifacts.train_accuracy_per_epoch),
-                            "projected_step_fraction": delta_artifacts.projected_step_fraction,
-                            "skipped": bool(delta_artifacts.skipped),
-                        },
+                        "delta": self._artifacts_payload(delta_artifacts),
+                        "full_retrain": self._artifacts_payload(
+                            full_artifacts,
+                            skipped=full_artifacts is None,
+                        ),
                     }
                 )
                 self._write_results(results_path, results)
                 last_drift_score = float(drift_result.shift_score)
                 continue
 
-            old_class_ids = list(range(0, task_id * self.config.classes_per_task))
-            new_class_ids = list(
-                range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)
-            )
-            full_metrics, full_time = self._run_full_retrain_baseline(
-                all_seen_loaders,
-                eval_loaders[: task_id + 1],
-                old_class_ids=old_class_ids,
-                new_class_ids=new_class_ids,
-            )
+            full_artifacts = None
+            if run_mode == "compare":
+                _baseline_model, full_metrics, full_time, full_artifacts = self._run_full_retrain_baseline(
+                    all_seen_loaders,
+                    eval_loaders[: task_id + 1],
+                    old_class_ids=old_class_ids,
+                    new_class_ids=new_class_ids,
+                )
+            else:
+                full_metrics = None
+                full_time = 0.0
             decision.compute_savings_percent = compute_compute_savings(
                 delta_artifacts.wall_time_seconds, full_time
             )
@@ -535,15 +584,11 @@ class BenchmarkRunner:
             results["epoch_history"].append(
                 {
                     "task_id": task_id,
-                    "delta": {
-                        "epochs_run": int(delta_artifacts.epochs_run),
-                        "ce_loss_per_epoch": list(delta_artifacts.ce_loss_per_epoch),
-                        "geometry_loss_per_epoch": list(delta_artifacts.geometry_loss_per_epoch),
-                        "ewc_loss_per_epoch": list(delta_artifacts.ewc_loss_per_epoch),
-                        "train_accuracy_per_epoch": list(delta_artifacts.train_accuracy_per_epoch),
-                        "projected_step_fraction": delta_artifacts.projected_step_fraction,
-                        "skipped": bool(delta_artifacts.skipped),
-                    },
+                    "delta": self._artifacts_payload(delta_artifacts),
+                    "full_retrain": self._artifacts_payload(
+                        full_artifacts,
+                        skipped=full_artifacts is None,
+                    ),
                 }
             )
             self._write_results(results_path, results)
@@ -989,7 +1034,11 @@ class BenchmarkRunner:
         )
 
     @staticmethod
-    def _artifacts_payload(artifacts: TrainArtifacts | None) -> dict[str, Any]:
+    def _artifacts_payload(
+        artifacts: TrainArtifacts | None,
+        *,
+        skipped: bool = False,
+    ) -> dict[str, Any]:
         if artifacts is None:
             return {
                 "epochs_run": 0,
@@ -998,7 +1047,7 @@ class BenchmarkRunner:
                 "ewc_loss_per_epoch": [],
                 "train_accuracy_per_epoch": [],
                 "projected_step_fraction": None,
-                "skipped": False,
+                "skipped": skipped,
             }
         return {
             "epochs_run": int(artifacts.epochs_run),
@@ -1014,7 +1063,6 @@ class BenchmarkRunner:
         self,
         *,
         task_id: int,
-        model: MELDModel,
         all_seen_loaders: list[DataLoader],
         eval_loaders: list[DataLoader],
     ) -> tuple[MELDModel, dict[str, Any], TaskSnapshot, Decision, TrainArtifacts]:
@@ -1239,7 +1287,7 @@ class BenchmarkRunner:
         self,
         task_id: int,
         delta_metrics: dict[str, Any] | None,
-        full_metrics: dict[str, Any],
+        full_metrics: dict[str, Any] | None,
         snapshot_before: TaskSnapshot | None,
         snapshot: TaskSnapshot | None,
         pre_risk_estimate: OracleEstimate,
@@ -1285,11 +1333,15 @@ class BenchmarkRunner:
             )
             and decision.state in {"SAFE_DELTA", "CAUTIOUS_DELTA"}
         )
-        fc = np.asarray(full_metrics["confusion_matrix"])
+        fc = np.asarray(full_metrics["confusion_matrix"]) if full_metrics is not None else None
         if delta_metrics is not None:
             dc = np.asarray(delta_metrics["confusion_matrix"])
-            equivalence_gap = compute_equivalence_gap(dc, fc)
-            forgetting = max(0.0, full_metrics["top1"] - delta_metrics["top1"])
+            equivalence_gap = compute_equivalence_gap(dc, fc) if fc is not None else None
+            forgetting = (
+                max(0.0, full_metrics["top1"] - delta_metrics["top1"])
+                if full_metrics is not None
+                else None
+            )
             delta_payload = {
                 "top1": delta_metrics["top1"],
                 "top5": delta_metrics["top5"],
@@ -1312,10 +1364,19 @@ class BenchmarkRunner:
                 "wall_time_seconds": delta_wall_time_seconds,
                 "skipped": True,
             }
-        return {
-            "task_id": task_id,
-            "delta": delta_payload,
-            "full_retrain": {
+        if full_metrics is None:
+            full_payload = {
+                "top1": None,
+                "top5": None,
+                "ece": None,
+                "ece_old": None,
+                "ece_new": None,
+                "per_class_acc": {},
+                "wall_time_seconds": 0.0,
+                "skipped": True,
+            }
+        else:
+            full_payload = {
                 "top1": full_metrics["top1"],
                 "top5": full_metrics["top5"],
                 "ece": full_metrics["ece"],
@@ -1323,7 +1384,11 @@ class BenchmarkRunner:
                 "ece_new": full_metrics.get("ece_new"),
                 "per_class_acc": full_metrics["per_class_accuracy"],
                 "wall_time_seconds": full_metrics.get("wall_time_seconds", 0.0),
-            },
+            }
+        return {
+            "task_id": task_id,
+            "delta": delta_payload,
+            "full_retrain": full_payload,
             "snapshot": {"fisher_eigenvalue_max": snapshot.fisher_eigenvalue_max if snapshot else 0.0, "class_ids": snapshot.class_ids if snapshot else []},
             "oracle": {
                 "risk_estimate_pre": pre_risk_estimate.value,
@@ -1407,18 +1472,20 @@ class BenchmarkRunner:
             return {}
         delta_top1s = [t["delta"].get("top1") for t in tasks if isinstance(t.get("delta"), dict) and t["delta"].get("top1") is not None]
         delta_eces = [t["delta"].get("ece") for t in tasks if isinstance(t.get("delta"), dict) and t["delta"].get("ece") is not None]
-        full_eces = [t["full_retrain"]["ece"] for t in tasks if t["full_retrain"].get("ece") is not None]
+        full_top1s = [t["full_retrain"]["top1"] for t in tasks if isinstance(t.get("full_retrain"), dict) and t["full_retrain"].get("top1") is not None]
+        full_eces = [t["full_retrain"]["ece"] for t in tasks if isinstance(t.get("full_retrain"), dict) and t["full_retrain"].get("ece") is not None]
         eq_gaps = [t.get("equivalence_gap") for t in tasks if t.get("equivalence_gap") is not None]
         summary = {
+            "run_mode": self._run_mode(),
             "mean_delta_top1": float(np.mean(delta_top1s)) if delta_top1s else None,
-            "mean_full_retrain_top1": float(np.mean([t["full_retrain"]["top1"] for t in tasks])),
+            "mean_full_retrain_top1": float(np.mean(full_top1s)) if full_top1s else None,
             "mean_delta_ece": float(np.mean(delta_eces)) if delta_eces else None,
             "mean_full_retrain_ece": float(np.mean(full_eces)) if full_eces else None,
             "mean_equivalence_gap": float(np.mean(eq_gaps)) if eq_gaps else None,
             "mean_compute_savings": float(np.mean([t["compute_savings_percent"] for t in tasks])),
             "decisions": [t["decision"]["state"] for t in tasks],
             "total_wall_time_delta": float(np.sum([float(t["delta"].get("wall_time_seconds", 0.0)) for t in tasks if isinstance(t.get("delta"), dict)])),
-            "total_wall_time_full_retrain": float(np.sum([t["full_retrain"]["wall_time_seconds"] for t in tasks])),
+            "total_wall_time_full_retrain": float(np.sum([float(t["full_retrain"].get("wall_time_seconds", 0.0)) for t in tasks if isinstance(t.get("full_retrain"), dict)])),
         }
         if summary["mean_delta_ece"] is not None and summary["mean_full_retrain_ece"] is not None:
             summary["ece_preserved"] = bool(

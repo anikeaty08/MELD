@@ -15,8 +15,9 @@ MELD is a good fit when you want:
 
 - replay-free continual-learning experiments
 - safe incremental updates on new tasks
+- the option to compare delta updates against full retraining
 - vision and text benchmark runs with comparable outputs
-- a reusable runner, API, and dashboard around those workflows
+- a reusable runner and API that you can extend with your own datasets
 
 
 
@@ -77,6 +78,12 @@ results = run(
 print(results["final_summary"])
 ```
 
+You can choose the primary execution path with `run_mode`:
+
+- `compare`: run MELD delta updates and a full-retrain baseline side by side
+- `delta`: run only the replay-free update path
+- `full_retrain`: always retrain on all seen task data
+
 ### CLI
 
 ```bash
@@ -96,21 +103,49 @@ Equivalent module form:
 python -m meld.cli --help
 ```
 
-### Web dashboard
+## Custom datasets
 
-```bash
-meld-web
+MELD ships with built-in benchmark adapters, but you can also register your own
+task bundle provider through the Python API. A provider returns a list of
+`(train_dataset, test_dataset)` pairs, one pair per continual-learning task.
+
+```python
+from torch.utils.data import TensorDataset
+import torch
+
+from meld import MELDConfig, TrainConfig, register_dataset, run
+from meld.datasets import split_classification_dataset_into_tasks
+
+
+def my_dataset_provider(config: MELDConfig):
+    train = TensorDataset(
+        torch.randn(12, 3, 32, 32),
+        torch.tensor([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    )
+    test = TensorDataset(
+        torch.randn(8, 3, 32, 32),
+        torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]),
+    )
+    return split_classification_dataset_into_tasks(
+        train,
+        test,
+        num_tasks=config.num_tasks,
+        classes_per_task=config.classes_per_task,
+    )
+
+
+register_dataset("MyDataset", my_dataset_provider, overwrite=True)
+
+results = run(
+    MELDConfig(
+        dataset="MyDataset",
+        num_tasks=2,
+        classes_per_task=2,
+        run_mode="compare",
+        train=TrainConfig(backbone="resnet20", epochs=1, batch_size=8),
+    )
+)
 ```
-
-Then open `http://127.0.0.1:8080`.
-
-The dashboard can:
-
-- launch experiments
-- monitor logs and metrics
-- show all supported backbones and text encoders
-- pre-download supported datasets
-- warm selected or all text-model assets before a run
 
 ## Dataset preparation
 
@@ -167,6 +202,7 @@ Supported text encoders include:
 ```text
 meld/
 |- api.py
+|- datasets.py
 |- bootstrap.py
 |- cli.py
 |- delta.py

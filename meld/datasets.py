@@ -28,6 +28,11 @@ def normalize_dataset_name(name: str) -> str:
     return name.upper().replace("-", "").replace("_", "")
 
 
+_DATASET_NAMES = {
+    normalize_dataset_name(name): name for name in _BUILTIN_DATASETS
+}
+
+
 def register_dataset(
     name: str,
     provider: DatasetProvider,
@@ -41,6 +46,7 @@ def register_dataset(
         if not overwrite and key in _DATASET_REGISTRY:
             raise ValueError(f"Dataset provider already registered for '{raw}'.")
         _DATASET_REGISTRY[key] = provider
+        _DATASET_NAMES[key] = name
 
 
 def get_dataset_provider(name: str) -> DatasetProvider | None:
@@ -48,8 +54,7 @@ def get_dataset_provider(name: str) -> DatasetProvider | None:
 
 
 def list_registered_datasets() -> list[str]:
-    names = sorted(set(_BUILTIN_DATASETS).union(_DATASET_REGISTRY))
-    return names
+    return sorted(set(_DATASET_NAMES.values()))
 
 
 def extract_labels(dataset: Dataset[Any]) -> torch.Tensor:
@@ -73,12 +78,17 @@ def split_classification_dataset_into_tasks(
     if train_targets.numel() == 0:
         return []
 
+    task_limit = max(0, int(num_tasks))
+    if task_limit == 0:
+        return []
+    classes_per_task = max(1, int(classes_per_task))
     classes = torch.unique(train_targets).tolist()
     classes = sorted(int(class_id) for class_id in classes)
     bundle: TaskBundle = []
-    for task_id in range(min(int(num_tasks), max(1, len(classes) // max(1, int(classes_per_task))))):
-        start = task_id * int(classes_per_task)
-        class_ids = classes[start : start + int(classes_per_task)]
+    task_count = min(task_limit, max(1, (len(classes) + classes_per_task - 1) // classes_per_task))
+    for task_id in range(task_count):
+        start = task_id * classes_per_task
+        class_ids = classes[start : start + classes_per_task]
         if not class_ids:
             break
         train_mask = torch.zeros(len(train_targets), dtype=torch.bool)
@@ -93,10 +103,16 @@ def split_classification_dataset_into_tasks(
 
 
 def validate_task_bundle(bundle: Any) -> TaskBundle:
-    if not isinstance(bundle, list):
-        raise TypeError("Dataset provider must return a list of (train_ds, test_ds) task pairs.")
+    if isinstance(bundle, (str, bytes)):
+        raise TypeError("Dataset provider must return an iterable of (train_ds, test_ds) task pairs.")
+    try:
+        items = list(bundle)
+    except TypeError as exc:
+        raise TypeError(
+            "Dataset provider must return an iterable of (train_ds, test_ds) task pairs."
+        ) from exc
     validated: TaskBundle = []
-    for index, item in enumerate(bundle):
+    for index, item in enumerate(items):
         if not isinstance(item, tuple) or len(item) != 2:
             raise TypeError(
                 f"Task bundle entry {index} must be a (train_ds, test_ds) tuple, got {type(item).__name__}."

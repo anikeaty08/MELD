@@ -74,6 +74,7 @@ config = MELDConfig(
     dataset="synthetic",
     num_tasks=2,
     classes_per_task=2,
+    run_mode="compare",
     bound_tolerance=10.0,
     train=TrainConfig(
         backbone="resnet20",
@@ -84,6 +85,26 @@ config = MELDConfig(
 
 results = run(config, results_path="results.json")
 print(results["final_summary"])
+```
+
+## Run modes
+
+MELD exposes three primary run modes:
+
+- `compare`: run the replay-free delta update path and a full-retrain baseline
+- `delta`: run only MELD's incremental update path
+- `full_retrain`: always retrain on all seen task data
+
+CLI example:
+
+```bash
+meld --dataset synthetic --num-tasks 2 --classes-per-task 2 --run-mode full_retrain
+```
+
+Python API example:
+
+```python
+config = MELDConfig(dataset="synthetic", run_mode="delta")
 ```
 
 ## CLI example
@@ -141,3 +162,44 @@ Dashboard preparation coverage:
 
 `TinyImageNet` still requires a manually extracted `tiny-imagenet-200` folder
 inside the chosen data root.
+
+## Custom dataset adapters
+
+You can register dataset providers when you want MELD to operate on your own
+data source instead of only the built-in benchmark names.
+
+The provider contract is:
+
+- input: `MELDConfig`
+- output: a list of `(train_dataset, test_dataset)` pairs
+- each dataset must implement `__len__` and `__getitem__`
+
+Example:
+
+```python
+import torch
+from torch.utils.data import TensorDataset
+
+from meld import MELDConfig, register_dataset
+from meld.datasets import split_classification_dataset_into_tasks
+
+
+def custom_provider(config: MELDConfig):
+    train = TensorDataset(
+        torch.randn(12, 3, 32, 32),
+        torch.tensor([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]),
+    )
+    test = TensorDataset(
+        torch.randn(8, 3, 32, 32),
+        torch.tensor([0, 0, 1, 1, 2, 2, 3, 3]),
+    )
+    return split_classification_dataset_into_tasks(
+        train,
+        test,
+        num_tasks=config.num_tasks,
+        classes_per_task=config.classes_per_task,
+    )
+
+
+register_dataset("CustomImages", custom_provider, overwrite=True)
+```

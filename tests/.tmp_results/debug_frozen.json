@@ -1,0 +1,401 @@
+{
+  "run_id": "20260321T182318.474747Z",
+  "status": "completed",
+  "config": {
+    "dataset": "synthetic",
+    "dataset_provider": null,
+    "num_tasks": 2,
+    "classes_per_task": 2,
+    "run_mode": "compare",
+    "bound_tolerance": 10.0,
+    "pac_gate_tolerance": 0.1,
+    "shift_threshold": 0.3,
+    "prefer_cuda": false,
+    "cifar_c_path": null,
+    "database_path": "meld_results.db",
+    "seed": 7,
+    "train": {
+      "backbone": "resnet20",
+      "pretrained_backbone": true,
+      "incremental_strategy": "frozen_analytic",
+      "epochs": 1,
+      "base_epochs": 1,
+      "batch_size": 8,
+      "lr": 0.1,
+      "momentum": 0.9,
+      "weight_decay": 0.0005,
+      "freeze_bn_stats": false,
+      "lambda_geometry": 5.0,
+      "lambda_ewc": 1.0,
+      "lambda_kd": 1.0,
+      "kd_temperature": 2.0,
+      "geometry_decay": 0.3,
+      "analytic_ridge": 0.001,
+      "enable_importance_weighting": true,
+      "label_smoothing": 0.1,
+      "mixup_alpha": 0.2,
+      "cutmix_alpha": 1.0,
+      "max_grad_norm": 1.0,
+      "use_imprinting": true,
+      "imprinting_max_samples_per_class": 64,
+      "auto_scale_safe_update": true,
+      "min_safe_lr": 1e-05,
+      "use_ema_fisher": true,
+      "fisher_ema_decay": 0.9,
+      "auto_derive_hparams": true,
+      "protection_level": 0.5,
+      "enable_grad_projection": false,
+      "text_encoder_model": "sentence-transformers/all-MiniLM-L6-v2",
+      "full_retrain_epochs": null,
+      "pac_gate_tolerance": 0.1,
+      "num_workers": 0
+    }
+  },
+  "tasks": [
+    {
+      "task_id": 0,
+      "delta": {
+        "top1": 0.5,
+        "top5": 1.0,
+        "ece": 0.4095872640609741,
+        "ece_old": null,
+        "ece_new": 0.4095872640609741,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 1.0
+        },
+        "wall_time_seconds": 0.7213563919067383
+      },
+      "full_retrain": {
+        "top1": 1.0,
+        "top5": 1.0,
+        "ece": 0.3171998858451843,
+        "ece_old": null,
+        "ece_new": 0.3171998858451843,
+        "per_class_acc": {
+          "0": 1.0,
+          "1": 1.0
+        },
+        "wall_time_seconds": 0.45535945892333984
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 1.7266055345535278,
+        "class_ids": [
+          0,
+          1
+        ]
+      },
+      "oracle": {
+        "risk_estimate_pre": 0.0,
+        "drift_realized_post": 0.0,
+        "risk_estimate_held": true,
+        "bound_type": "empirical_spectral",
+        "calibrated": false,
+        "bound_is_formal": false,
+        "fisher_saturated": false,
+        "derivation": null,
+        "empirical_calibrated_estimate": null,
+        "pac_style_gap": null,
+        "pac_equivalence_bound": null
+      },
+      "drift": {
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {},
+        "detector_scores": {},
+        "input_shift_score": 0.0,
+        "pretrain_mmd_score": null,
+        "pretrain_mmd_detected": null,
+        "pretrain_mmd_severity": null
+      },
+      "decision": {
+        "state": "SAFE_DELTA",
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": true,
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "reason": "bound held, no shift detected",
+        "compute_savings_percent": -58.414715621001136,
+        "confidence": 1.0,
+        "recommended_action": "delta_update",
+        "formal_guarantee": false
+      },
+      "equivalence_gap": 0.5000000000000001,
+      "forgetting": 0.5,
+      "compute_savings_percent": -58.414715621001136,
+      "cil_metrics": {
+        "forward_transfer_top1": null,
+        "forgetting_per_task": {},
+        "backward_transfer_per_task": {},
+        "mean_forgetting": null,
+        "mean_backward_transfer": null
+      },
+      "train": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.595024436712265
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.6724137931034483
+        ],
+        "projected_step_fraction": 0.0,
+        "skipped": false
+      }
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "top1": null,
+        "top5": null,
+        "ece": null,
+        "ece_old": null,
+        "ece_new": null,
+        "per_class_acc": {},
+        "wall_time_seconds": 0.0,
+        "skipped": true
+      },
+      "full_retrain": {
+        "top1": 0.25,
+        "top5": 1.0,
+        "ece": 0.5953184524551034,
+        "ece_old": 0.7019561845809221,
+        "ece_new": 0.48868072032928467,
+        "per_class_acc": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.0,
+          "3": 1.0
+        },
+        "wall_time_seconds": 0.5033531188964844
+      },
+      "snapshot": {
+        "fisher_eigenvalue_max": 3.9811201095581055,
+        "class_ids": [
+          0,
+          1
+        ]
+      },
+      "oracle": {
+        "risk_estimate_pre": 0.0,
+        "drift_realized_post": 0.0,
+        "risk_estimate_held": false,
+        "bound_type": "protected_params_frozen",
+        "calibrated": false,
+        "bound_is_formal": false,
+        "fisher_saturated": false,
+        "derivation": null,
+        "empirical_calibrated_estimate": null,
+        "pac_style_gap": {
+          "value": 0.15298417691755103,
+          "delta": 0.05,
+          "bound_type": "pac_style_hoeffding",
+          "calibrated": false,
+          "bound_is_formal": true,
+          "derivation": {
+            "name": "pac_style_hoeffding",
+            "assumptions": [
+              "IID concentration around empirical loss",
+              "Hoeffding-style bounded-loss concentration"
+            ],
+            "reference_terms": [
+              "sqrt(log(1/delta)/(2n))"
+            ]
+          }
+        },
+        "pac_equivalence_bound": {
+          "value": 0.15298417691755103,
+          "delta": 0.05,
+          "bound_type": "pac_importance_weighted",
+          "calibrated": false,
+          "bound_is_formal": true,
+          "derivation": {
+            "name": "pac_importance_weighted",
+            "assumptions": [
+              "Importance weighting is applied to CE loss",
+              "Weight variance captures density-ratio estimation noise",
+              "Fisher spectral term upper-bounds curvature-induced drift"
+            ],
+            "reference_terms": [
+              "sqrt(Var(w)/n)",
+              "lambda_max(F)*||theta_delta-theta_old||",
+              "sqrt(log(1/delta)/(2n))"
+            ]
+          }
+        }
+      },
+      "drift": {
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "severity": "none",
+        "per_class_drift": {},
+        "detector_scores": {},
+        "input_shift_score": 0.0,
+        "pretrain_mmd_score": 0.7717911636901322,
+        "pretrain_mmd_detected": true,
+        "pretrain_mmd_severity": "critical"
+      },
+      "decision": {
+        "state": "BOUND_EXCEEDED",
+        "pre_bound": 0.0,
+        "post_bound": 0.0,
+        "bound_held": false,
+        "shift_score": 0.0,
+        "shift_detected": false,
+        "reason": "formal PAC gate exceeded tolerance before training",
+        "compute_savings_percent": 100.0,
+        "confidence": 1.0,
+        "recommended_action": "full_retrain",
+        "formal_guarantee": false
+      },
+      "equivalence_gap": null,
+      "forgetting": null,
+      "compute_savings_percent": 100.0,
+      "cil_metrics": {
+        "forward_transfer_top1": 1.0,
+        "forgetting_per_task": {
+          "0": 0.5
+        },
+        "backward_transfer_per_task": {
+          "0": -0.5
+        },
+        "mean_forgetting": 0.5,
+        "mean_backward_transfer": -0.5
+      },
+      "train": {
+        "epochs_run": 0,
+        "ce_loss_per_epoch": [],
+        "geometry_loss_per_epoch": [],
+        "ewc_loss_per_epoch": [],
+        "train_accuracy_per_epoch": [],
+        "projected_step_fraction": null,
+        "skipped": true
+      }
+    }
+  ],
+  "bounds_timeline": [
+    {
+      "task_id": 0,
+      "risk_estimate_pre": 0.0,
+      "drift_realized_post": 0.0,
+      "risk_estimate_held": true,
+      "bound_type": "empirical_spectral",
+      "bound_is_formal": false,
+      "pac_style_gap": null,
+      "decision_state": "SAFE_DELTA"
+    },
+    {
+      "task_id": 1,
+      "risk_estimate_pre": 0.0,
+      "drift_realized_post": 0.0,
+      "risk_estimate_held": false,
+      "bound_type": "protected_params_frozen",
+      "bound_is_formal": false,
+      "pac_style_gap": {
+        "value": 0.15298417691755103,
+        "delta": 0.05,
+        "bound_type": "pac_style_hoeffding",
+        "calibrated": false,
+        "bound_is_formal": true,
+        "derivation": {
+          "name": "pac_style_hoeffding",
+          "assumptions": [
+            "IID concentration around empirical loss",
+            "Hoeffding-style bounded-loss concentration"
+          ],
+          "reference_terms": [
+            "sqrt(log(1/delta)/(2n))"
+          ]
+        }
+      },
+      "decision_state": "BOUND_EXCEEDED"
+    }
+  ],
+  "epoch_history": [
+    {
+      "task_id": 0,
+      "delta": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.595024436712265
+        ],
+        "geometry_loss_per_epoch": [
+          0.0
+        ],
+        "ewc_loss_per_epoch": [
+          0.0
+        ],
+        "train_accuracy_per_epoch": [
+          0.6724137931034483
+        ],
+        "projected_step_fraction": 0.0,
+        "skipped": false
+      },
+      "full_retrain": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.45527140237390995
+        ],
+        "geometry_loss_per_epoch": [],
+        "ewc_loss_per_epoch": [],
+        "train_accuracy_per_epoch": [
+          0.796875
+        ],
+        "projected_step_fraction": null,
+        "skipped": false
+      }
+    },
+    {
+      "task_id": 1,
+      "delta": {
+        "epochs_run": 0,
+        "ce_loss_per_epoch": [],
+        "geometry_loss_per_epoch": [],
+        "ewc_loss_per_epoch": [],
+        "train_accuracy_per_epoch": [],
+        "projected_step_fraction": null,
+        "skipped": true
+      },
+      "full_retrain": {
+        "epochs_run": 1,
+        "ce_loss_per_epoch": [
+          0.8292203843593597
+        ],
+        "geometry_loss_per_epoch": [],
+        "ewc_loss_per_epoch": [],
+        "train_accuracy_per_epoch": [
+          0.6875
+        ],
+        "projected_step_fraction": null,
+        "skipped": false
+      }
+    }
+  ],
+  "final_summary": {
+    "run_mode": "compare",
+    "mean_delta_top1": 0.5,
+    "mean_full_retrain_top1": 0.625,
+    "mean_delta_ece": 0.4095872640609741,
+    "mean_full_retrain_ece": 0.45625916915014386,
+    "mean_equivalence_gap": 0.5000000000000001,
+    "mean_compute_savings": 20.792642189499432,
+    "decisions": [
+      "SAFE_DELTA",
+      "BOUND_EXCEEDED"
+    ],
+    "total_wall_time_delta": 0.7213563919067383,
+    "total_wall_time_full_retrain": 0.9587125778198242,
+    "ece_preserved": true
+  },
+  "robustness": {
+    "status": "skipped",
+    "reason": "Unsupported dataset for CIFAR-C: synthetic"
+  }
+}

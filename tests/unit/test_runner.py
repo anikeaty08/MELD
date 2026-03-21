@@ -3,10 +3,11 @@ from types import ModuleType
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from meld.api import MELDConfig, TrainConfig
 from meld.benchmarks.runner import BenchmarkRunner
+from meld.datasets import list_registered_datasets, register_dataset, split_classification_dataset_into_tasks
 from meld.modeling import MELDModel
 from meld.models.classifier import IncrementalClassifier
 
@@ -127,3 +128,86 @@ def test_runner_evaluate_accepts_dict_batches():
 
     assert metrics["top1"] >= 0.0
     assert metrics["confusion_matrix"].shape == (2, 2)
+
+
+def _custom_bundle(_: MELDConfig):
+    train = TensorDataset(
+        torch.randn(12, 3, 32, 32),
+        torch.tensor([0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3], dtype=torch.long),
+    )
+    test = TensorDataset(
+        torch.randn(8, 3, 32, 32),
+        torch.tensor([0, 0, 1, 1, 2, 2, 3, 3], dtype=torch.long),
+    )
+    return split_classification_dataset_into_tasks(
+        train,
+        test,
+        num_tasks=2,
+        classes_per_task=2,
+    )
+
+
+def test_runner_accepts_dataset_provider_from_config():
+    runner = BenchmarkRunner(
+        MELDConfig(
+            dataset="custom-images",
+            dataset_provider=_custom_bundle,
+            num_tasks=2,
+            classes_per_task=2,
+            train=TrainConfig(backbone="resnet20", batch_size=2, epochs=1),
+        )
+    )
+
+    bundle = runner._load_dataset_bundle()
+
+    assert len(bundle) == 2
+    assert len(bundle[0][0]) == 6
+
+
+def test_runner_accepts_registered_dataset_provider():
+    dataset_name = "unit_custom_registry_dataset"
+    register_dataset(dataset_name, _custom_bundle, overwrite=True)
+    runner = BenchmarkRunner(
+        MELDConfig(
+            dataset=dataset_name,
+            num_tasks=2,
+            classes_per_task=2,
+            train=TrainConfig(backbone="resnet20", batch_size=2, epochs=1),
+        )
+    )
+
+    bundle = runner._load_dataset_bundle()
+
+    assert len(bundle) == 2
+    assert len(bundle[1][1]) == 4
+
+
+def test_split_classification_dataset_keeps_partial_final_task():
+    train = TensorDataset(
+        torch.randn(10, 3, 32, 32),
+        torch.tensor([0, 0, 1, 1, 2, 2, 3, 3, 4, 4], dtype=torch.long),
+    )
+    test = TensorDataset(
+        torch.randn(5, 3, 32, 32),
+        torch.tensor([0, 1, 2, 3, 4], dtype=torch.long),
+    )
+
+    bundle = split_classification_dataset_into_tasks(
+        train,
+        test,
+        num_tasks=3,
+        classes_per_task=2,
+    )
+
+    assert len(bundle) == 3
+    assert len(bundle[2][0]) == 2
+    assert len(bundle[2][1]) == 1
+
+
+def test_list_registered_datasets_preserves_custom_name():
+    dataset_name = "FancyCustomDataset"
+    register_dataset(dataset_name, _custom_bundle, overwrite=True)
+
+    datasets = list_registered_datasets()
+
+    assert dataset_name in datasets

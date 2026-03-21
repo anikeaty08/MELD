@@ -20,8 +20,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="CIFAR-10",
         help=(
             "Dataset to use. Image: synthetic, CIFAR-10, CIFAR-100, TinyImageNet, STL-10. "
-            "Text: AGNews (4 cls), DBpedia (14 cls), YahooAnswersNLP (10 cls)."
+            "Text: AGNews (4 cls), DBpedia (14 cls), YahooAnswersNLP (10 cls). "
+            "You can also use a registered custom dataset provider through the Python API."
         ),
+    )
+    parser.add_argument(
+        "--run-mode",
+        default="compare",
+        choices=["compare", "delta", "full_retrain"],
+        help="Primary execution mode: compare delta vs full retrain, delta only, or full retrain only.",
     )
     parser.add_argument("--num-tasks", type=int, default=2, help="Number of incremental tasks to run.")
     parser.add_argument("--classes-per-task", type=int, default=5, help="Classes introduced in each task.")
@@ -79,6 +86,7 @@ def main() -> None:
         dataset=args.dataset,
         num_tasks=args.num_tasks,
         classes_per_task=args.classes_per_task,
+        run_mode=args.run_mode,
         prefer_cuda=args.prefer_cuda,
         bound_tolerance=args.bound_tolerance,
         pac_gate_tolerance=args.pac_gate_tolerance,
