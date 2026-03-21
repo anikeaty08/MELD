@@ -806,12 +806,24 @@ class BenchmarkRunner:
         hf_name, hf_config = hf_name_map[dataset_name]
         num_classes_map = {"AGNEWS": 4, "DBPEDIA": 14, "YAHOOANSWERSNLP": 10}
         num_classes = num_classes_map[dataset_name]
-        text_col_map = {"AGNEWS": "text", "DBPEDIA": "content", "YAHOOANSWERSNLP": "best_answer"}
+        # (body_col, optional_title_col) — title is prepended when present
+        text_col_map = {
+            "AGNEWS": ("text", None),
+            "DBPEDIA": ("content", "title"),
+            "YAHOOANSWERSNLP": ("best_answer", "question_title"),
+        }
 
         raw = hf_load(hf_name, hf_config, cache_dir=str(self.config.data_root))
         train_split = raw["train"]
         test_split = raw["test"]
-        text_col = text_col_map[dataset_name]
+        text_col, title_col = text_col_map[dataset_name]
+
+        def _extract_texts(split: Any) -> list[str]:
+            bodies = split[text_col]
+            if title_col and title_col in split.column_names:
+                titles = split[title_col]
+                return [f"{str(t).strip()} {str(b).strip()}" for t, b in zip(titles, bodies)]
+            return [str(b) for b in bodies]
 
         def _tokenize(texts: list[str]) -> dict[str, Any]:
             return tokenizer(
@@ -823,7 +835,7 @@ class BenchmarkRunner:
             )
 
         def _build_tensor_dataset(split: Any) -> "_NLPTensorDataset":
-            texts = split[text_col]
+            texts = _extract_texts(split)
             labels = split["label"]
             enc = _tokenize(texts)
             return _NLPTensorDataset(
