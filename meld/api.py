@@ -12,6 +12,7 @@ from .core.oracle import SpectralSafetyOracle
 from .core.policy import FourStateDeployPolicy
 from .core.snapshot import FisherManifoldSnapshot
 from .core.updater import GeometryConstrainedUpdater
+from .datasets import DatasetProvider, list_registered_datasets, register_dataset
 from .interfaces.base import DriftDetector, ManifoldUpdater
 
 
@@ -62,8 +63,10 @@ class TrainConfig:
 @dataclass(slots=True)
 class MELDConfig:
     dataset: str = "CIFAR-10"
+    dataset_provider: DatasetProvider | None = None
     num_tasks: int = 2
     classes_per_task: int = 5
+    run_mode: str = "compare"
     prefer_cuda: bool = False
     bound_tolerance: float = 10.0
     pac_gate_tolerance: float = 0.1
@@ -99,3 +102,12 @@ def run(
         deploy_policy=deploy_policy,
     )
     return runner.run(results_path=results_path)
+
+
+__all__ = [
+    "MELDConfig",
+    "TrainConfig",
+    "list_registered_datasets",
+    "register_dataset",
+    "run",
+]

@@ -25,6 +25,7 @@ from ..core.oracle import SpectralSafetyOracle
 from ..core.policy import FourStateDeployPolicy
 from ..core.snapshot import FisherManifoldSnapshot
 from ..core.updater import FrozenBackboneAnalyticUpdater, FullRetrainUpdater, GeometryConstrainedUpdater
+from ..datasets import get_dataset_provider, validate_task_bundle
 from ..interfaces.base import (
     Decision,
     DriftDetector,
@@ -151,6 +152,17 @@ class BenchmarkRunner:
         self._loader_num_workers = self._effective_num_workers()
         self._pin_memory = self.device.type == "cuda"
         self._result_store = ResultStore(getattr(config, "database_path", None))
+
+    def _run_mode(self) -> str:
+        mode = str(getattr(self.config, "run_mode", "compare"))
+        if mode not in {"compare", "delta", "full_retrain"}:
+            raise ValueError(
+                f"Unknown run_mode '{mode}'. Valid choices: compare, delta, full_retrain."
+            )
+        return mode
+
+    def _uses_custom_dataset_provider(self) -> bool:
+        return bool(getattr(self.config, "dataset_provider", None) is not None or get_dataset_provider(self.config.dataset) is not None)
 
     def run(self, results_path: str | Path | None = None) -> dict[str, Any]:
         self._seed_everything(int(self.config.seed))
@@ -620,6 +632,14 @@ class BenchmarkRunner:
         return train_tasks, eval_tasks
 
     def _load_dataset_bundle(self) -> list[tuple[Dataset[Any], Dataset[Any]]]:
+        custom_provider = getattr(self.config, "dataset_provider", None)
+        if custom_provider is not None:
+            return validate_task_bundle(custom_provider(self.config))
+
+        registered_provider = get_dataset_provider(self.config.dataset)
+        if registered_provider is not None:
+            return validate_task_bundle(registered_provider(self.config))
+
         dataset_name = self.config.dataset.upper().replace("-", "").replace("_", "")
         if dataset_name == "SYNTHETIC":
             return self._synthetic_bundle()
@@ -926,7 +946,7 @@ class BenchmarkRunner:
         *,
         old_class_ids: list[int] | None = None,
         new_class_ids: list[int] | None = None,
-    ) -> tuple[dict[str, Any], float]:
+    ) -> tuple[MELDModel, dict[str, Any], float, TrainArtifacts]:
         torch.manual_seed(int(self.config.seed) + len(train_loaders))
         use_cached = (
             self.config.full_retrain_interval > 1
@@ -947,7 +967,7 @@ class BenchmarkRunner:
         baseline_epochs = self.config.train.full_retrain_epochs or self.config.train.epochs
         train_cfg = replace(self.config.train, epochs=baseline_epochs)
         start = time.time()
-        bm, _ = self.full_retrain_updater.update(bm, train_loader, None, train_cfg)
+        bm, artifacts = self.full_retrain_updater.update(bm, train_loader, None, train_cfg)
         wall = time.time() - start
         self._baseline_model_cache = bm.clone()
         metrics = self._evaluate(
@@ -957,7 +977,74 @@ class BenchmarkRunner:
             new_class_ids=new_class_ids,
         )
         metrics["wall_time_seconds"] = wall
-        return metrics, wall
+        return bm, metrics, wall, artifacts
+
+    @staticmethod
+    def _not_applicable_estimate(bound_type: str) -> OracleEstimate:
+        return OracleEstimate(
+            value=0.0,
+            bound_type=bound_type,
+            calibrated=False,
+            bound_is_formal=False,
+        )
+
+    @staticmethod
+    def _artifacts_payload(artifacts: TrainArtifacts | None) -> dict[str, Any]:
+        if artifacts is None:
+            return {
+                "epochs_run": 0,
+                "ce_loss_per_epoch": [],
+                "geometry_loss_per_epoch": [],
+                "ewc_loss_per_epoch": [],
+                "train_accuracy_per_epoch": [],
+                "projected_step_fraction": None,
+                "skipped": False,
+            }
+        return {
+            "epochs_run": int(artifacts.epochs_run),
+            "ce_loss_per_epoch": list(artifacts.ce_loss_per_epoch),
+            "geometry_loss_per_epoch": list(artifacts.geometry_loss_per_epoch),
+            "ewc_loss_per_epoch": list(artifacts.ewc_loss_per_epoch),
+            "train_accuracy_per_epoch": list(artifacts.train_accuracy_per_epoch),
+            "projected_step_fraction": artifacts.projected_step_fraction,
+            "skipped": bool(artifacts.skipped),
+        }
+
+    def _run_primary_full_retrain(
+        self,
+        *,
+        task_id: int,
+        model: MELDModel,
+        all_seen_loaders: list[DataLoader],
+        eval_loaders: list[DataLoader],
+    ) -> tuple[MELDModel, dict[str, Any], TaskSnapshot, Decision, TrainArtifacts]:
+        all_known_class_ids = list(range((task_id + 1) * self.config.classes_per_task))
+        model, full_metrics, _full_time, full_artifacts = self._run_full_retrain_baseline(
+            all_seen_loaders,
+            eval_loaders[: task_id + 1],
+            old_class_ids=list(range(0, task_id * self.config.classes_per_task)),
+            new_class_ids=list(range(task_id * self.config.classes_per_task, (task_id + 1) * self.config.classes_per_task)),
+        )
+        snapshot = self.snapshot_strategy.capture(
+            model,
+            self._merged_loader(all_seen_loaders, shuffle=False),
+            all_known_class_ids,
+            task_id,
+        )
+        decision = Decision(
+            state="FULL_RETRAIN",
+            pre_bound=0.0,
+            post_bound=0.0,
+            bound_held=True,
+            shift_score=0.0,
+            shift_detected=False,
+            reason="Configured to run the primary training path in full_retrain mode.",
+            compute_savings_percent=0.0,
+            confidence=1.0,
+            recommended_action="full_retrain",
+            formal_guarantee=False,
+        )
+        return model, full_metrics, snapshot, decision, full_artifacts
 
     def _evaluate(
         self,
@@ -1360,8 +1447,14 @@ class BenchmarkRunner:
     def _config_dict(self) -> dict[str, Any]:
         return {
             "dataset": self.config.dataset,
+            "dataset_provider": (
+                getattr(getattr(self.config, "dataset_provider", None), "__name__", type(getattr(self.config, "dataset_provider", None)).__name__)
+                if getattr(self.config, "dataset_provider", None) is not None
+                else None
+            ),
             "num_tasks": self.config.num_tasks,
             "classes_per_task": self.config.classes_per_task,
+            "run_mode": self._run_mode(),
             "bound_tolerance": self.config.bound_tolerance,
             "pac_gate_tolerance": self.config.pac_gate_tolerance,
             "shift_threshold": self.config.shift_threshold,
