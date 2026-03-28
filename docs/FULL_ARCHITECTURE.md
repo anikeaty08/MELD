@@ -70,39 +70,54 @@ flowchart LR
 ### Layer Summary
 
 - **Incoming Experience / Input Layer**  
-  The strategy receives one task at a time: train data, test data, task id, and class ids.  
+  What it does: receives one task at a time and sends it into the Fisher update pipeline.  
   Contains: current task samples, labels, task id, and active classes.
 
 - **State Layer**  
-  It loads old reference parameters, Fisher / K-FAC state, and compact task summaries.  
+  What it does: loads the old mathematical memory that will guide the protected update.  
   Contains: `theta_ref`, K-FAC `A/G`, Fisher diagonal, label counts, and feature statistics.
 
   Here `theta_ref` means the saved old model parameters before the new task update.  
   In practice it contains all trainable weights of the old model, for example layer weights, biases, and any other learned parameters.
 
+  Here K-FAC `A` stores activation-side statistics and K-FAC `G` stores gradient-side statistics.  
+  Together they approximate which layer directions are important.
+
+  Fisher diagonal means per-parameter importance values used in the regularization term.  
+  Label counts store how many examples of each class have been seen, and feature statistics store compact summaries such as means or variances of old representations.
+
 - **Shift Detection Layer**  
-  It checks whether the new task looks like normal continuation, covariate shift, or concept shift.  
+  What it does: checks how different the incoming task is from previous tasks before training.  
   Contains: simple shift outcome such as `none`, `covariate`, or `concept`.
 
 - **Loss Construction Layer**  
-  The update combines new-task learning with old-knowledge protection through CE, KD, and Fisher / K-FAC regularization.  
+  What it does: builds the learning objective that learns the new task while protecting old knowledge.  
   Contains: `L_CE`, `L_KD`, and Fisher / K-FAC drift penalty terms.
 
+  `L_CE` is the standard classification loss on the new task.  
+  `L_KD` is the distillation loss that keeps new outputs closer to old outputs, and the Fisher / K-FAC term penalizes harmful parameter drift.
+
 - **Optimization Layer**  
-  The optimizer applies gradient-based updates to the current model.  
+  What it does: applies gradient-based updates to the current model using the total FisherDelta loss.  
   Contains: SGD-style parameter update from `theta_ref` toward `theta_new`.
 
 - **Updated Model**  
-  The result is a controlled update from `theta_ref` to `theta_new`.  
+  What it does: stores the newly updated model after the current task finishes training.  
   Contains: the latest trained weights after the current task update.
 
 - **Certificate Layer**  
-  After training, the framework reports drift, calibration, and compute diagnostics.  
+  What it does: summarizes how stable, reliable, and efficient the update was after training.  
   Contains: `epsilon_param`, `kl_bound`, `kl_bound_normalized`, `ece_*`, and `compute_ratio`.
 
+  `epsilon_param` measures parameter movement, `kl_bound` measures output drift, and `kl_bound_normalized` is a scaled practical version of that drift.  
+  `ece_*` tracks calibration before and after the update, while `compute_ratio` compares delta updating with full retraining cost.
+
 - **State Refresh Layer**  
-  The new model state becomes the reference for the next task, along with refreshed Fisher / K-FAC summaries.  
+  What it does: refreshes the stored old-task memory so the next task starts from the latest state.  
   Contains: refreshed reference weights, new Fisher / K-FAC values, and updated summaries.
+
+  New reference weights become the next `theta_ref`.  
+  The refreshed Fisher / K-FAC values and summaries are the updated memory carried into the following task.
 
 ### Main Formulas
 
@@ -211,43 +226,61 @@ flowchart LR
 ### Layer Summary
 
 - **Incoming Experience / Input Layer**  
-  The strategy receives the next task in the stream and treats it as a sequential update.  
+  What it does: receives the next task in the stream and starts the practical Delta update path.  
   Contains: current task data, labels, task id, and class ids.
 
 - **Retention Layer**  
-  It loads replay memory, old-model snapshot, retained summaries, and light Fisher state.  
+  What it does: loads the old information that DeltaStrategy will reuse during the new update.  
   Contains: replay samples, old-model copy, retained class / feature summaries, and light regularization state.
 
   The old-model snapshot is a saved copy of the previous model used as a teacher during distillation.  
   It usually contains the old backbone weights, classifier weights, and other learned parameters needed to reproduce old outputs and features.
 
+  Replay samples are stored old-task examples reused during later updates.  
+  Retained class / feature summaries are compact statistics of old classes, and the light regularization state is a softer Fisher-style memory used to limit drift.
+
 - **Mixed Training Layer**  
-  New-task data is mixed with retained old samples and old-model targets.  
+  What it does: combines current-task data with replayed old samples and teacher outputs before loss computation.  
   Contains: current-task minibatches, replay minibatches, and teacher outputs from the old model.
 
+  Current-task minibatches drive new learning.  
+  Replay minibatches and teacher outputs remind the model of older tasks while the new task is being learned.
+
 - **Loss Construction Layer**  
-  The objective combines new-task CE, replay CE, output distillation, feature distillation, and light regularization.  
+  What it does: builds the multi-objective practical loss used by DeltaStrategy.  
   Contains: `L_CE_new`, `L_CE_replay`, `L_KD`, `L_feat`, and `L_reg`.
 
+  `L_CE_new` learns the new task, `L_CE_replay` refreshes old tasks, and `L_KD` keeps outputs close to the old model.  
+  `L_feat` preserves internal features, while `L_reg` softly discourages harmful parameter drift.
+
 - **Optimization Layer**  
-  The optimizer updates the current model using the combined practical objective.  
+  What it does: updates the current model using the combined practical objective.  
   Contains: gradient-based update of the practical multi-loss objective.
 
 - **Updated Model**  
-  The same model is incrementally adapted into a new version rather than restarted.  
+  What it does: stores the incrementally updated model after mixed training completes.  
   Contains: the latest model after learning from both new and retained information.
 
 - **Stabilization Layer**  
-  Classifier balancing and bias alignment reduce old-vs-new class bias.  
+  What it does: corrects the classifier so recent classes do not dominate older ones.  
   Contains: balancing steps, bias correction, and weight alignment for the classifier.
 
+  Balancing steps reduce old-vs-new class imbalance.  
+  Bias correction and weight alignment adjust classifier outputs so newer classes do not unfairly get larger logits.
+
 - **Evaluation Layer**  
-  The framework measures accuracy, calibration, compute ratio, and certificate values after the update.  
+  What it does: measures how good, stable, and efficient the Delta update was.  
   Contains: stream metrics, calibration metrics, compute metrics, and certificate outputs.
 
+  Stream metrics include task-level and overall accuracy.  
+  Calibration metrics measure confidence quality, compute metrics measure speedup, and certificate outputs summarize drift and update stability.
+
 - **Memory Refresh Layer**  
-  Replay memory and retained summaries are updated after the task finishes.  
+  What it does: updates retained memory so the next task can still use old information.  
   Contains: updated replay buffer and refreshed retained state for the next task.
+
+  The replay buffer stores selected old samples for future reuse.  
+  The refreshed retained state stores updated summaries and lightweight old-task memory after the current task finishes.
 
 ### Main Formulas
 
