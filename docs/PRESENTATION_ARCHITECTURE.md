@@ -52,30 +52,30 @@ Our framework sits in the middle:
 
 ```mermaid
 flowchart LR
-    A["Dataset Providers<br/>Synthetic, CIFAR, NLP"] --> B["DeltaStream<br/>Ordered Experience objects"]
-    B --> C["Delta Strategy"]
+    A["Dataset Providers<br/>synthetic, vision, text"] --> B["DeltaStream<br/>ordered task sequence"]
+    B --> C["Delta Strategy<br/>update engine"]
 
-    C --> C1["BaseStrategy<br/>Hook-based train/eval loop"]
-    C --> C2["FisherDeltaStrategy<br/>Main delta update engine"]
-    C --> C3["FullRetrainStrategy<br/>Baseline for comparison"]
+    C --> C1["BaseStrategy<br/>hook-based loop"]
+    C --> C2["FisherDeltaStrategy<br/>structured update"]
+    C --> C3["FullRetrainStrategy<br/>baseline only"]
 
-    C2 --> D["Core Math + State"]
-    D --> D1["DeltaState<br/>theta_ref, KFAC, Fisher diag,<br/>label counts, feature stats"]
-    D --> D2["KFACComputer<br/>Second-order curvature approximation"]
+    C2 --> D["Core Math + State<br/>old knowledge memory"]
+    D --> D1["DeltaState<br/>theta_ref, KFAC, Fisher diag,<br/>counts, feature stats"]
+    D --> D2["KFACComputer<br/>layer importance"]
     D --> D3["ShiftDetector<br/>none / covariate / concept"]
-    D --> D4["CertificateComputer<br/>epsilon + KL diagnostics"]
+    D --> D4["CertificateComputer<br/>drift diagnostics"]
     D --> D5["CalibrationTracker<br/>ECE before / after"]
 
-    C --> E["EvaluationPlugin"]
-    E --> E1["Accuracy"]
-    E --> E2["Equivalence"]
-    E --> E3["Calibration"]
-    E --> E4["Compute savings"]
-    E --> E5["Forgetting"]
+    C --> E["EvaluationPlugin<br/>metric manager"]
+    E --> E1["Accuracy<br/>task and stream"]
+    E --> E2["Equivalence<br/>stability flag"]
+    E --> E3["Calibration<br/>confidence quality"]
+    E --> E4["Compute savings<br/>speedup ratio"]
+    E --> E5["Forgetting<br/>retention drop"]
 
-    E --> F["Loggers"]
-    F --> F1["InteractiveLogger"]
-    F --> F2["CSVLogger"]
+    E --> F["Loggers<br/>output layer"]
+    F --> F1["InteractiveLogger<br/>terminal table"]
+    F --> F2["CSVLogger<br/>saved results"]
 ```
 
 ### High-Level Architecture Explained
