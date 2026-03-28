@@ -239,12 +239,18 @@ flowchart LR
   Replay samples are stored old-task examples reused during later updates.  
   Retained class / feature summaries are compact statistics of old classes, and the light regularization state is a softer Fisher-style memory used to limit drift.
 
+  The light Fisher / K-FAC state is used as soft parameter-protection memory.  
+  It helps the model avoid drifting too far from useful old knowledge, while replay and distillation do most of the retention work.
+
 - **Mixed Training Layer**  
   What it does: combines current-task data with replayed old samples and teacher outputs before loss computation.  
   Contains: current-task minibatches, replay minibatches, and teacher outputs from the old model.
 
   Current-task minibatches drive new learning.  
   Replay minibatches and teacher outputs remind the model of older tasks while the new task is being learned.
+
+  It is called a mixed training layer because the model is not trained only on the new task.  
+  It is trained on a mixture of new-task data, replayed old samples, and old-model guidance.
 
 - **Loss Construction Layer**  
   What it does: builds the multi-objective practical loss used by DeltaStrategy.  
@@ -253,17 +259,29 @@ flowchart LR
   `L_CE_new` learns the new task, `L_CE_replay` refreshes old tasks, and `L_KD` keeps outputs close to the old model.  
   `L_feat` preserves internal features, while `L_reg` softly discourages harmful parameter drift.
 
+  This is the layer that decides what exactly the model should optimize during training.  
+  It combines all learning and retention signals into one total objective that is passed to the optimizer.
+
 - **Optimization Layer**  
   What it does: updates the current model using the combined practical objective.  
   Contains: gradient-based update of the practical multi-loss objective.
+
+  This is the stage where all the loss terms actually influence the weights through backpropagation and SGD.  
+  In simple words, this is where the framework turns the combined objective into a real parameter update.
 
 - **Updated Model**  
   What it does: stores the incrementally updated model after mixed training completes.  
   Contains: the latest model after learning from both new and retained information.
 
+  This updated model is not a brand-new model trained from zero.  
+  It is the previous model after being carefully adapted to the new task while still carrying old knowledge forward.
+
 - **Stabilization Layer**  
   What it does: corrects the classifier so recent classes do not dominate older ones.  
   Contains: balancing steps, bias correction, and weight alignment for the classifier.
+
+  This layer is needed because even after training, newer classes can get unfairly strong logits compared to older classes.  
+  So the framework applies balancing and alignment steps to make predictions more fair across old and new classes.
 
   Balancing steps reduce old-vs-new class imbalance.  
   Bias correction and weight alignment adjust classifier outputs so newer classes do not unfairly get larger logits.
