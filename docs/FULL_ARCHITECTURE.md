@@ -1,5 +1,40 @@
 # Full Architecture
 
+## Research Inspiration
+
+This framework is inspired by recent continual-learning work on Fisher-based updates, especially:
+
+- *On the Computation of the Fisher Information in Continual Learning*  
+  Gido M. van de Ven, arXiv, February 17, 2025
+
+This paper is important for our framework because it reinforces a key idea:
+
+> in continual learning, the way Fisher information is computed matters a lot for how well old knowledge is preserved during updates.
+
+That connects directly to our FisherDeltaStrategy design, where we use Fisher / K-FAC guided regularization as a structured way to protect important parameters during incremental updates.
+
+## Where Our Framework Sits
+
+Our framework, `delta-framework`, works in the same continual-learning space as existing systems, but it focuses on a slightly different idea.
+
+Most existing frameworks mainly emphasize:
+
+- running continual-learning strategies
+- evaluating benchmarks
+- comparing methods
+
+Our framework emphasizes:
+
+- delta-style updating
+- structured old-task memory
+- Fisher / K-FAC guided regularization
+- equivalence-style diagnostics
+- calibration and compute tracking
+- practical and theory-guided strategies in one system
+
+So the goal of this file is not only to show a benchmark pipeline.  
+It is to explain how the framework performs a controlled continual update internally.
+
 This document explains the two architectures separately:
 
 - `FisherDeltaStrategy`
