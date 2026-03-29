@@ -1,0 +1,18 @@
+{
+  "test": "test_2_cifar10",
+  "status": "PASS",
+  "epsilon_param": 0.004942520125527093,
+  "kl_bound": 55.6414448795894,
+  "is_equivalent": false,
+  "shift_type": "covariate",
+  "ece_before": 0.7902296368479729,
+  "ece_after": 0.012697740495204897,
+  "ece_delta": -0.777531896352768,
+  "compute_ratio": 3.4051224633141697,
+  "ce_scale": 5.0,
+  "ewc_scale": 0.8,
+  "kfac_layers": 4,
+  "n_params": 24458,
+  "n_old": 40000,
+  "n_new": 10000
+}

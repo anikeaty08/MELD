@@ -1,0 +1,17 @@
+{
+  "test": "test_18_quick_cifar10_resnet20",
+  "status": "PASS",
+  "accuracy_stream": 0.2677,
+  "epsilon_param": 0.031963668438032014,
+  "kl_bound": 28.896015312995054,
+  "kl_bound_normalized": 0.05563905858678784,
+  "is_equivalent": false,
+  "shift_type": "covariate",
+  "ece_before": 0.6174957837387919,
+  "ece_after": 0.21957858620584011,
+  "ece_delta": -0.39791719753295174,
+  "compute_ratio": 1.0376414676486418,
+  "ce_scale": 1.0,
+  "ewc_scale": 0.25,
+  "kfac_layers": 24
+}

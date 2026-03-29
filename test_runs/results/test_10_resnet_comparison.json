@@ -1,0 +1,20 @@
+{
+  "test": "test_10_resnet_comparison",
+  "status": "PASS",
+  "backbones": {
+    "ResNet20": {
+      "acc": 0.184,
+      "epsilon": 0.029704010663058143,
+      "speedup": 2.7232760446327893,
+      "kfac_layers": 24,
+      "params": 269072
+    },
+    "ResNet32": {
+      "acc": 0.18560000000000001,
+      "epsilon": 0.0473876261009372,
+      "speedup": 3.395599976995609,
+      "kfac_layers": 36,
+      "params": 463504
+    }
+  }
+}

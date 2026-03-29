@@ -1,0 +1,16 @@
+{
+  "test": "test_19_quick_mnist_cnn",
+  "status": "PASS",
+  "accuracy_stream": 0.1880988401412002,
+  "epsilon_param": 0.014166892302961679,
+  "kl_bound": 4.5202338412068155,
+  "kl_bound_normalized": 0.06311058702606194,
+  "is_equivalent": false,
+  "shift_type": "covariate",
+  "ece_before": 0.7948055686339908,
+  "ece_after": 0.061343704698305794,
+  "ece_delta": -0.733461863935685,
+  "compute_ratio": 1.0515651033987614,
+  "ce_scale": 1.0,
+  "ewc_scale": 1.0
+}

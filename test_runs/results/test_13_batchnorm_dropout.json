@@ -1,0 +1,9 @@
+{
+  "test": "test_13_batchnorm_dropout",
+  "status": "PASS",
+  "epsilon_param": 0.007607373748296657,
+  "kl_bound": 15.0950707604222,
+  "compute_ratio": 2.4689305731819187,
+  "kfac_layers": 5,
+  "n_params": 59050
+}

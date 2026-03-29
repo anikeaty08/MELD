@@ -1,0 +1,20 @@
+{
+  "test": "test_25_mnist_taskid_maxperf",
+  "status": "PASS",
+  "epochs": 8,
+  "task_identity_inference": true,
+  "scenario": "task_incremental",
+  "preset": "maxperf",
+  "replay_memory_per_class": 32,
+  "replay_batch_size": 64,
+  "accuracy_stream": 0.9876922202096482,
+  "epsilon_param": 0.012513546204485934,
+  "kl_bound": 28.71304010204704,
+  "kl_bound_normalized": 0.09344803609874548,
+  "is_equivalent": false,
+  "shift_type": "covariate",
+  "ece_before": 0.549728037354565,
+  "ece_after": 0.13163271620005476,
+  "ece_delta": -0.4180953211545102,
+  "compute_ratio": 1.383680003103577
+}

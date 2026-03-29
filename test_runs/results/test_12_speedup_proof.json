@@ -1,0 +1,27 @@
+{
+  "test": "test_12_speedup_proof",
+  "status": "PASS",
+  "delta_total_time": 0.683,
+  "full_total_time": 2.04,
+  "actual_wall_speedup": 2.99,
+  "estimated_speedup": 7.973762477529486,
+  "delta_accuracy": 0.10666666666666667,
+  "full_accuracy": 0.09000000000000001,
+  "epsilon_param": 0.008400947685128618,
+  "delta_times_per_task": [
+    0.373,
+    0.07,
+    0.063,
+    0.051,
+    0.059,
+    0.067
+  ],
+  "full_times_per_task": [
+    0.301,
+    0.298,
+    0.321,
+    0.324,
+    0.388,
+    0.407
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "test": "test_1_synthetic",
+  "status": "PASS",
+  "delta_accuracy": 0.16666666666666666,
+  "full_accuracy": 0.4895833333333333,
+  "accuracy_gap": 0.32291666666666663,
+  "epsilon_param": 0.0045953909005990844,
+  "kl_bound": 1.2221493573118838,
+  "is_equivalent": false,
+  "shift_type": "covariate",
+  "ece_before": 0.2853744262829423,
+  "ece_after": 0.049373360350728035,
+  "ece_delta": -0.23600106593221426,
+  "compute_ratio": 1.616729887973455,
+  "ce_scale": 1.0,
+  "ewc_scale": 1.0,
+  "n_old": 128,
+  "n_new": 64,
+  "tier": "convex_approx"
+}

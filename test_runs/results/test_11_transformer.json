@@ -1,0 +1,15 @@
+{
+  "test": "test_11_transformer",
+  "status": "PASS",
+  "kfac_layers": 4,
+  "kfac_param_names": [
+    "embed.weight",
+    "ff.0.weight",
+    "ff.2.weight",
+    "head.weight"
+  ],
+  "epsilon_param": 0.41235235952103766,
+  "kl_bound": 4.078910756769266,
+  "compute_ratio": 2.578184903720495,
+  "n_params": 35846
+}

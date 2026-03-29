@@ -1,0 +1,32 @@
+[
+  {
+    "title": "Overview",
+    "items": [
+      { "id": "home", "path": "/", "label": "Home" },
+      { "id": "getting-started", "path": "/getting-started", "label": "Getting Started" },
+      { "id": "core-concepts", "path": "/core-concepts", "label": "Core Concepts" }
+    ]
+  },
+  {
+    "title": "Training",
+    "items": [
+      { "id": "strategies", "path": "/strategies", "label": "Strategies" },
+      { "id": "evaluation", "path": "/evaluation-and-metrics", "label": "Evaluation and Metrics" },
+      { "id": "datasets", "path": "/datasets", "label": "Datasets" }
+    ]
+  },
+  {
+    "title": "Extensibility",
+    "items": [
+      { "id": "plugins", "path": "/plugins", "label": "Plugins" },
+      { "id": "examples", "path": "/complete-examples", "label": "Complete Examples" }
+    ]
+  },
+  {
+    "title": "Reference",
+    "items": [
+      { "id": "api-reference", "path": "/api-reference", "label": "API Reference" },
+      { "id": "faq", "path": "/faq", "label": "FAQ" }
+    ]
+  }
+]
